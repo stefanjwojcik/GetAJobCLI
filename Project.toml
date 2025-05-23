@@ -3,6 +3,11 @@ uuid = "df2d39c4-ce97-47f0-97c1-c56ba41c9c0f"
 authors = ["= <=> and contributors"]
 version = "1.0.0-DEV"
 
+[deps]
+PromptingTools = "670122d1-24a8-4d70-bfce-740807c42192"
+ReplMaker = "b873ce64-0db9-51f5-a568-4457d8e49576"
+Term = "22787eb5-b846-44ae-b979-8e399b8463ab"
+
 [compat]
 julia = "1.6.7"
 
