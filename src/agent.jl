@@ -1,26 +1,12 @@
 ## Generate an AI prompt template that works for the moderation model
 
 
-@kwdef mutable struct ActionCall 
-    classification::String=""
-    userconfirmation::Bool=false
+@kwdef mutable struct Intent 
+    intent::String=""
 end
 
-@kwdef mutable struct ModerationContext
-    moderationmodel::Union{ModerationModelSet, Nothing}=nothing
-    policyset::Union{PolicySet, Nothing}=nothing
-    actioncall::Union{ActionCall, Nothing}=nothing
+@kwdef mutable struct Context
     conversation_context::PT.ConversationMemory=PT.ConversationMemory()
-end
-
-function call_confirmed(call::ActionCall)
-    # Call the function to confirm user intent
-    call.classification != "" && call.userconfirmation == true
-end
-
-function call_confirmed(context::ModerationContext)
-    # Call the function to confirm user intent
-    call_confirmed(context.actioncall)
 end
 
 """
@@ -34,23 +20,21 @@ input = "A new example of Hateful Misinformation is that all trans people are pe
 PT.aiclassify(:InputClassifier; choices, input) 
 
 """
-global const routingchoices = [ ("PolicySet", "If the user provides a moderation policy description "), 
-            ("Policy", "If the user identifies a new example or description for an existing policy"), 
-            ("generate_moderation_model", "If the user asks to generate a moderation model based on an existing policy set"), 
-            ("moderate_text", "If the user provides some text and asks to moderate a text based on an existing moderation model"), 
-            ("other", "Any other question or comment the user provides")
+global const routingchoices = 
+          [ ("QuizMe", "User wants you to generate a question for practice."), 
+            ("Study", "Provide information to answer the respondent's question.")
             ]
 
 """
 Function to classify and then handle user input and route it to the appropriate function
 """
-function handle_input!(modcontext::ModerationContext, input::String)
+function handle_input!(context::Context, input::String)
     # Use aiclassify to classify the input
     classification = PT.aiclassify(:InputClassifier; choices=routingchoices, input=input)
     @info "Classification result: $(classification.content)"
-    if classification.content == "other"
+    if classification.content == "Study"
         # If the classification is 'other', we can ask the user to confirm
-        push!(modcontext.conversation_context, PT.UserMessage("$input"))
+        push!(context.conversation_context, PT.UserMessage("$input"))
     else 
         modcontext.actioncall = ActionCall(classification=classification.content, userconfirmation=true)
         # Add the classification to the conversation context

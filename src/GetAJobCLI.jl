@@ -5,7 +5,7 @@ using ReplMaker
 import PromptingTools as PT
 
 
-const LOGO = @yellow raw"""
+const LOGO = raw"""
 
 
 ____      _                 _       _     
