@@ -1,51 +1,8 @@
-# Data Preparation 
-
-
-## Run a bash script to convert all files in a directory to text files
-```bash 
-./convert_all_files_to_txt.sh resources/Data Science Interview Resources
-```
-
-## Run another bash script to clean the text files further to remove binary garbage and other unwanted characters
-```bash
-./clean_txt_for_rag.sh all_txt
-```
-
-## Now open Julia, and use PromptingTools to classify the files as: 
-```julia
-import PromptingTools as PT 
+## Extracting Lessons from text chunks - this works surprisingly well 
+using RAGTools 
 using CSV, DataFrames
 
-# Load all file names 
-files = readdir("all_txt")
-sysprompt = """
-You are a world-class AI tutor for Data Science, Statistics, and Machine Learning. 
-"""
 
-context = PT.SystemMessage(sysprompt)
-
-"""
- Possible classifications of each file
-
- classify_prompt = "You are an expert Data Scientist, take your best guess at what each resource is about"
-
-Examples 
- input = "Stripe Data Challenge"
-PT.aiclassify(:InputClassifier; choices=resourcetypes, input=input, model="gpt-4o") 
-
-"""
-global const resourcetypes = 
-        [ ("TeachingResource", "Teaches core Statistics, Data Science, or Machine Learning concepts - not including a specific programming language."), 
-        ("ProgrammingLanguageResource", "teaches a concept or idea but within the scope of a specific programming language, such as Python, SQL, R, or Julia."), 
-        ("QuestionSet", "a set of questions around a specific topic, such as a Data Science interview question set."), 
-        ("InterviewResource", "a resource that provides insight into tech screens or specific interview instances at specific companies."), 
-        ("Other", "any other resource that does not fit into the above categories.")
-        ]
-
-
-## Now, let's extract the relevant information from the files and classify them
-
-```julia
 """
 You're a world-class data extraction engine built by OpenAI together with Google and to extract filter metadata to power the most advanced Data Science learning platform in the world. 
 
@@ -96,9 +53,7 @@ struct Lesson
     answer::String # required field!
 end
 
-using RAGTools 
-using CSV, DataFrames
-
+"""
 ## Select some resources to index in a RAG system 
 allfiles = readdir("clean_txt")
 r1 = allfiles[[1, 3]]
@@ -114,38 +69,16 @@ mychunks = get_chunks(RT.FileChunker(),
     max_length = 1000)
 
 
-msg = aiextract(mychunks[1][1]; return_type=Lesson)
-msg.content
-```
-
-## Now, efficient prompting and indexing for a good RAG system 
-
-```julia
-
-import PromptingTools as PT
-using RAGTools 
-using CSV, DataFrames
-
-## Select some resources to index in a RAG system 
-allfiles = readdir("clean_txt")
-r1 = allfiles[[15, 84, 100]]
-
-paths_to_files = joinpath.("clean_txt", r1)
-# Build an index of chunks, embed them, and create a lookup index of metadata/tags for each chunk
-import RAGTools as RT
-mychunks = get_chunks(RT.FileChunker(),
-	paths_to_files;
-    sources = paths_to_files,
-	verbose = true,
-	separators = separators = ["\n\n", ". ", "\n", " "], 
-    max_length = 1000)
-
-```
-
-## Now, let's use the prompt we generated to try to extract key lessons from the text 
-
-```julia
-import PromptingTools as PT
-using RAGTools
-
-# Load the prompt 
+#msg = aiextract(mychunks[1][1]; return_type=Lesson)
+#msg.content
+"""
+function lessonsfromchunks(chunks)
+    lessons = Lesson[]
+    for chunk in chunks
+        msg = aiextract(chunk; return_type=Lesson)
+        if !isempty(msg.content)
+            push!(lessons, msg.content)
+        end
+    end
+    return lessons
+end

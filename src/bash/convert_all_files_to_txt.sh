@@ -22,20 +22,43 @@ echo "----------------------------------------"
 convert_pdf() {
     local file="$1"
     local temp_txt="$2"
+    local temp_filtered="${temp_txt}.filtered"
     
     # Method 1: Try pandoc first
     if pandoc "$file" -t plain -o "$temp_txt" 2>/dev/null && [ -s "$temp_txt" ]; then
-        return 0
-    fi
-    
-    # Method 2: Try pdftotext (from poppler-utils)
-    if command -v pdftotext >/dev/null 2>&1; then
-        if pdftotext "$file" "$temp_txt" 2>/dev/null && [ -s "$temp_txt" ]; then
+        # Check for binary garbage in the output
+        if grep -q "stream\|endstream\|/Length\|/Filter" "$temp_txt"; then
+            echo "  - Pandoc produced binary output, trying alternative methods..."
+        else
             return 0
         fi
     fi
     
-    # Method 3: Try pdfplumber via python
+    # Method 2: Try pdftotext (from poppler-utils)
+    if command -v pdftotext >/dev/null 2>&1; then
+        if pdftotext -layout "$file" "$temp_txt" 2>/dev/null && [ -s "$temp_txt" ]; then
+            # Check for binary garbage in the output
+            if grep -q "stream\|endstream\|/Length\|/Filter" "$temp_txt"; then
+                echo "  - pdftotext produced binary output, trying alternative methods..."
+            else
+                return 0
+            fi
+        fi
+    fi
+    
+    # Method 3: Try OCRmyPDF if available (for scanned PDFs)
+    if command -v ocrmypdf >/dev/null 2>&1; then
+        local temp_ocr_pdf="${TEMP_DIR}/$(basename "$file").ocr.pdf"
+        if ocrmypdf --force-ocr --skip-text "$file" "$temp_ocr_pdf" >/dev/null 2>&1 && 
+           pdftotext -layout "$temp_ocr_pdf" "$temp_txt" 2>/dev/null && 
+           [ -s "$temp_txt" ]; then
+            rm -f "$temp_ocr_pdf"
+            return 0
+        fi
+        rm -f "$temp_ocr_pdf"
+    fi
+    
+    # Method 4: Try pdfplumber via python
     if command -v python3 >/dev/null 2>&1; then
         python3 -c "
 import sys
@@ -52,13 +75,33 @@ try:
     sys.exit(0 if text.strip() else 1)
 except ImportError:
     sys.exit(1)
-except Exception:
+except Exception as e:
+    print(f'PDF extraction error: {e}', file=sys.stderr)
     sys.exit(1)
         " 2>/dev/null && [ -s "$temp_txt" ] && return 0
     fi
     
+    # Method 5: Try pdf2txt.py from pdfminer.six if available
+    if command -v pdf2txt.py >/dev/null 2>&1; then
+        if pdf2txt.py -o "$temp_txt" "$file" 2>/dev/null && [ -s "$temp_txt" ]; then
+            return 0
+        fi
+    fi
+    
+    # Clean up any partial output with binary content
+    if [ -f "$temp_txt" ]; then
+        # Filter out common PDF binary content markers
+        grep -v "stream\|endstream\|/Length\|/Filter\|^<<.*>>$" "$temp_txt" > "$temp_filtered"
+        if [ -s "$temp_filtered" ]; then
+            mv "$temp_filtered" "$temp_txt"
+            return 0
+        fi
+        rm -f "$temp_filtered"
+    fi
+    
     return 1
 }
+
 
 # Function to convert file
 convert_file() {
