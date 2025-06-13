@@ -11,38 +11,6 @@
 ./clean_txt_for_rag.sh all_txt
 ```
 
-## Now open Julia, and use PromptingTools to classify the files as: 
-```julia
-import PromptingTools as PT 
-using CSV, DataFrames
-
-# Load all file names 
-files = readdir("all_txt")
-sysprompt = """
-You are a world-class AI tutor for Data Science, Statistics, and Machine Learning. 
-"""
-
-context = PT.SystemMessage(sysprompt)
-
-"""
- Possible classifications of each file
-
- classify_prompt = "You are an expert Data Scientist, take your best guess at what each resource is about"
-
-Examples 
- input = "Stripe Data Challenge"
-PT.aiclassify(:InputClassifier; choices=resourcetypes, input=input, model="gpt-4o") 
-
-"""
-global const resourcetypes = 
-        [ ("TeachingResource", "Teaches core Statistics, Data Science, or Machine Learning concepts - not including a specific programming language."), 
-        ("ProgrammingLanguageResource", "teaches a concept or idea but within the scope of a specific programming language, such as Python, SQL, R, or Julia."), 
-        ("QuestionSet", "a set of questions around a specific topic, such as a Data Science interview question set."), 
-        ("InterviewResource", "a resource that provides insight into tech screens or specific interview instances at specific companies."), 
-        ("Other", "any other resource that does not fit into the above categories.")
-        ]
-
-
 ## Now, let's extract the relevant information from the files and classify them
 
 ```julia
