@@ -1,9 +1,10 @@
-#module GetAJobCLI
+module GetAJobCLI
 
 using Term
 using ReplMaker
 import PromptingTools as PT
 
+include("LessonsFromText.jl")
 
 const LOGO = raw"""
 
@@ -184,4 +185,4 @@ end
 # Launch UI
 #main()
 
-#end
+end

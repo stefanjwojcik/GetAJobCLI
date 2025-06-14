@@ -85,35 +85,3 @@ mychunks = get_chunks(RT.FileChunker(),
 msg = aiextract(mychunks[1][1]; return_type=Lesson)
 msg.content
 ```
-
-## Now, efficient prompting and indexing for a good RAG system 
-
-```julia
-
-import PromptingTools as PT
-using RAGTools 
-using CSV, DataFrames
-
-## Select some resources to index in a RAG system 
-allfiles = readdir("clean_txt")
-r1 = allfiles[[15, 84, 100]]
-
-paths_to_files = joinpath.("clean_txt", r1)
-# Build an index of chunks, embed them, and create a lookup index of metadata/tags for each chunk
-import RAGTools as RT
-mychunks = get_chunks(RT.FileChunker(),
-	paths_to_files;
-    sources = paths_to_files,
-	verbose = true,
-	separators = separators = ["\n\n", ". ", "\n", " "], 
-    max_length = 1000)
-
-```
-
-## Now, let's use the prompt we generated to try to extract key lessons from the text 
-
-```julia
-import PromptingTools as PT
-using RAGTools
-
-# Load the prompt 

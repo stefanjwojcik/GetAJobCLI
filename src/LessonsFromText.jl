@@ -1,7 +1,14 @@
 ## Extracting Lessons from text chunks - this works surprisingly well 
-using RAGTools 
+import RAGTools as RT
 using CSV, DataFrames
+using Term
+using ProgressMeter
 
+function generate_file_paths(dirname::String)
+    allfiles = readdir(dirname)
+    paths_to_files = joinpath.(dirname, allfiles)
+    return paths_to_files
+end
 
 """
 You're a world-class data extraction engine built by OpenAI together with Google and to extract filter metadata to power the most advanced Data Science learning platform in the world. 
@@ -55,30 +62,132 @@ end
 
 """
 ## Select some resources to index in a RAG system 
-allfiles = readdir("clean_txt")
-r1 = allfiles[[1, 3]]
-
-paths_to_files = joinpath.("clean_txt", r1)
-# Build an index of chunks, embed them, and create a lookup index of metadata/tags for each chunk
-import RAGTools as RT
-mychunks = get_chunks(RT.FileChunker(),
-	paths_to_files;
-    sources = paths_to_files,
-	verbose = true,
-	separators = separators = ["\n\n", ". ", "\n", " "], 
+    filespaths = generate_file_paths("clean_txt")
+chunks = get_chunks(RT.FileChunker(), filespaths[1:2]; 
+    sources = filespaths[1:2], 
+    verbose = true, 
+    separators = ["\n\n", ". ", "\n", " "], 
     max_length = 1000)
+lessons = lessonfromchunks(chunks; limit=1)
 
-
-#msg = aiextract(mychunks[1][1]; return_type=Lesson)
-#msg.content
 """
-function lessonsfromchunks(chunks)
+function lessonfromchunks(chunks::Tuple{Vector{SubString{String}}, Vector{String}}; limit=5)::Vector{Lesson}
     lessons = Lesson[]
-    for chunk in chunks
-        msg = aiextract(chunk; return_type=Lesson)
-        if !isempty(msg.content)
+    counter = 0
+    @showprogress for text in chunks[1]
+        msg = aiextract(text; return_type=Lesson)
+        if !isnothing(msg.content)
             push!(lessons, msg.content)
+        end
+        counter += 1
+        if limit != -1 && counter >= limit
+            break
         end
     end
     return lessons
 end
+
+"""
+Interactive function that displays a lesson question and checks user's answer using PT.aiclassify classification.
+Returns true if answer is correct, false otherwise.
+"""
+function interactive_lesson_quiz(lesson::Lesson)::Bool
+    lesson_markdown = """
+# 📚 $(lesson.short_name)
+
+## 📖 Concept
+$(lesson.concept_or_lesson)
+
+## 📝 Definition & Examples
+$(lesson.definition_and_examples)
+
+## ❓ Question
+$(lesson.question_or_exercise)
+"""
+    
+    println(Term.Panel(lesson_markdown, title="Lesson Quiz", style="bold blue"))
+    println()
+    
+    print("Your answer: ")
+    user_answer = readline()
+    
+    if isempty(strip(user_answer))
+        error_markdown = """
+❌ **No answer provided!**
+
+💡 **Correct Answer:** $(lesson.answer)
+"""
+        println(Term.Panel(Term.parse_md(error_markdown), title="Result", style="bold red"))
+        return false
+    end
+    
+    choices = [("correct", "The user's answer demonstrates understanding of the core concepts and is substantially correct"), 
+               ("incorrect", "The user's answer is wrong or shows lack of understanding of the key concepts")]
+    
+    classification_input = """
+Question: $(lesson.question_or_exercise)
+
+Expected Answer: $(lesson.answer)
+
+User's Answer: $(user_answer)
+
+Evaluate if the user's answer demonstrates understanding of the core concepts, even if not perfectly worded.
+"""
+    
+    try
+        result = PT.aiclassify(:InputClassifier; choices=choices, input=classification_input)
+        is_correct = result.content == "correct"
+        
+        if is_correct
+            result_markdown = """
+✅ **CORRECT!** Well done!
+
+Your understanding of the concept is on track.
+"""
+            println(Term.Panel(result_markdown, title="Result", style="bold green"))
+        else
+            result_markdown = """
+❌ **Incorrect.**
+
+💡 **Correct Answer:** $(lesson.answer)
+
+Keep studying - you'll get it next time!
+"""
+            println(Term.Panel(Term.parse_md(result_markdown), title="Result", style="bold red"))
+        end
+        
+        return is_correct
+    catch e
+        error_markdown = """
+⚠️ **Error classifying answer:** $e
+
+💡 **Correct Answer:** $(lesson.answer)
+"""
+        println(Term.Panel(error_markdown, title="Error", style="bold yellow"))
+        return false
+    end
+end
+
+"""
+Display a lesson object in attractive markdown format for quick concept review.
+"""
+function display_lesson_summary(lesson::Lesson)
+    summary_markdown = """
+# 🎯 $(lesson.short_name)
+
+## Key Concept
+$(lesson.concept_or_lesson)
+
+## Definition & Examples
+$(lesson.definition_and_examples)
+
+## Practice Question
+*$(lesson.question_or_exercise)*
+
+## Answer
+**$(lesson.answer)**
+"""
+    
+    println(Term.Panel(Term.parse_md(summary_markdown), title="Lesson Summary", style="bold cyan"))
+end
+

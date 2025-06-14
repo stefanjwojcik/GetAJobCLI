@@ -6,6 +6,7 @@ version = "1.0.0-DEV"
 [deps]
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
 PromptingTools = "670122d1-24a8-4d70-bfce-740807c42192"
 RAGTools = "16ddad29-bbe8-45a7-857d-3d9514eb0023"
 ReplMaker = "b873ce64-0db9-51f5-a568-4457d8e49576"
