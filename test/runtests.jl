@@ -4,8 +4,8 @@ using Test
 import PromptingTools as PT
 
 @testset "GetAJobCLI.jl" begin
-    filespaths = generate_file_paths("clean_txt")
-    chunks = get_chunks(RT.FileChunker(), filespaths[1:2]; 
+    filespaths = generate_file_paths(joinpath(@__DIR__, "..", "clean_txt"))
+    chunks = RT.get_chunks(RT.FileChunker(), filespaths[1:2]; 
         sources = filespaths[1:2], 
         verbose = true, 
         separators = ["\n\n", ". ", "\n", " "], 
@@ -90,4 +90,124 @@ end
     
     @test_nowarn display_lesson_summary(test_lesson)
     println("✅ Display function test completed")
+end
+
+@testset "API Key Management" begin
+    # Test with temporary config directory to avoid affecting user's actual config
+    temp_dir = mktempdir()
+    temp_config_file = joinpath(temp_dir, "config.json")
+    
+    # Mock the constants for testing
+    original_config_dir = GetAJobCLI.CONFIG_DIR
+    original_config_file = GetAJobCLI.CONFIG_FILE
+    
+    try
+        # Temporarily override config paths for testing
+        eval(:(GetAJobCLI.CONFIG_DIR = $temp_dir))
+        eval(:(GetAJobCLI.CONFIG_FILE = $temp_config_file))
+        
+        @testset "Config Directory Creation" begin
+            @test_nowarn GetAJobCLI.ensure_config_dir()
+            @test isdir(temp_dir)
+        end
+        
+        @testset "API Key Loading and Saving" begin
+            # Test loading when no config exists
+            keys = GetAJobCLI.load_api_keys()
+            @test keys["openai_api_key"] === nothing
+            @test keys["anthropic_api_key"] === nothing
+            
+            # Test saving API keys
+            @test GetAJobCLI.save_api_keys("test_openai_key", "test_anthropic_key")
+            @test isfile(temp_config_file)
+            
+            # Test loading saved keys
+            loaded_keys = GetAJobCLI.load_api_keys()
+            @test loaded_keys["openai_api_key"] == "test_openai_key"
+            @test loaded_keys["anthropic_api_key"] == "test_anthropic_key"
+            
+            # Test partial key saving
+            @test GetAJobCLI.save_api_keys("new_openai_key", nothing)
+            partial_keys = GetAJobCLI.load_api_keys()
+            @test partial_keys["openai_api_key"] == "new_openai_key"
+            @test partial_keys["anthropic_api_key"] === nothing
+        end
+        
+        @testset "API Key Status Functions" begin
+            # These functions should run without errors
+            @test_nowarn GetAJobCLI.check_api_keys_status()
+            @test_nowarn GetAJobCLI.check_and_warn_api_keys()
+        end
+        
+    finally
+        # Restore original config paths
+        eval(:(GetAJobCLI.CONFIG_DIR = $original_config_dir))
+        eval(:(GetAJobCLI.CONFIG_FILE = $original_config_file))
+        # Clean up temp directory
+        rm(temp_dir, recursive=true, force=true)
+    end
+end
+
+@testset "Mode Functions" begin
+    @testset "Sample Lesson Loading" begin
+        sample_lessons = load_sample_lessons()
+        @test !isempty(sample_lessons)
+        @test all(l -> isa(l, Lesson), sample_lessons)
+        @test length(sample_lessons) >= 3  # Should have at least a few sample lessons
+        
+        # Test that all lessons have required fields
+        for lesson in sample_lessons
+            @test !isempty(lesson.short_name)
+            @test !isempty(lesson.concept_or_lesson)
+            @test !isempty(lesson.definition_and_examples)
+            @test !isempty(lesson.question_or_exercise)
+            @test !isempty(lesson.answer)
+        end
+    end
+    
+    @testset "Mode Helper Functions" begin
+        sample_lessons = load_sample_lessons()
+        
+        # Test topic listing
+        @test_nowarn list_topics(sample_lessons)
+        @test_nowarn list_topics(Lesson[])  # Empty list
+        
+        # Test topic filtering
+        # Should work with partial matches
+        matching = filter(l -> occursin("python", lowercase(l.short_name)), sample_lessons)
+        if !isempty(matching)
+            @test_nowarn show_lesson_by_topic(sample_lessons, "python")
+            @test_nowarn quiz_by_topic(sample_lessons, "python")
+        end
+        
+        # Test with non-existent topic
+        @test_nowarn show_lesson_by_topic(sample_lessons, "nonexistent_topic_xyz")
+        @test_nowarn quiz_by_topic(sample_lessons, "nonexistent_topic_xyz")
+    end
+    
+    @testset "Help Functions" begin
+        @test_nowarn show_quiz_help()
+        @test_nowarn show_learn_help()
+        @test_nowarn GetAJobCLI.show_help()  # Main help function
+    end
+end
+
+@testset "CLI Integration Functions" begin
+    @testset "Welcome and Display Functions" begin
+        @test_nowarn GetAJobCLI.render_welcome()
+        @test_nowarn GetAJobCLI.show_help()
+    end
+    
+    @testset "Logo Generation" begin
+        logo_lines = GetAJobCLI.print_centered_logo()
+        @test isa(logo_lines, Vector)
+        @test !isempty(logo_lines)
+    end
+    
+    @testset "Constants and Globals" begin
+        @test isa(GetAJobCLI.LOGO, String)
+        @test !isempty(GetAJobCLI.LOGO)
+        @test isa(GetAJobCLI.CONFIG_DIR, String)
+        @test isa(GetAJobCLI.CONFIG_FILE, String)
+    end
 end

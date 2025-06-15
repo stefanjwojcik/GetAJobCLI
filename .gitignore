@@ -2,3 +2,6 @@
 /all_txt
 /resources
 /clean_txt
+
+# Configuration files with API keys
+.getajobcli/

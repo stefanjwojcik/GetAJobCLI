@@ -1,8 +1,4 @@
 ## Extracting Lessons from text chunks - this works surprisingly well 
-import RAGTools as RT
-using CSV, DataFrames
-using Term
-using ProgressMeter
 
 function generate_file_paths(dirname::String)
     allfiles = readdir(dirname)
@@ -113,7 +109,7 @@ $(lesson.question_or_exercise)
     
     if isempty(strip(user_answer))
         error_markdown = """
-❌ **No answer provided!**
+❌ **Wow, you didn't provide an answer, let's try harder next time.**
 
 💡 **Correct Answer:** $(lesson.answer)
 """
@@ -147,7 +143,7 @@ Your understanding of the concept is on track.
             println(Term.Panel(result_markdown, title="Result", style="bold green"))
         else
             result_markdown = """
-❌ **Incorrect.**
+❌ **Hmm, Not Quite.**
 
 💡 **Correct Answer:** $(lesson.answer)
 
