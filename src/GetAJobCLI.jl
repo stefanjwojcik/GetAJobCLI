@@ -6,11 +6,12 @@ import PromptingTools as PT
 using PromptingTools: aiclassify, aigenerate, aiextract
 using JSON3
 import RAGTools as RT
-using CSV, DataFrames
+using CSV, DataFrames, Dates, HTTP, Random
 using ProgressMeter
 
 include("LessonsFromText.jl")
 include("modes.jl")
+include("lesson_generator.jl")
 
 export Lesson, 
        lessonfromchunks,
@@ -25,7 +26,12 @@ export Lesson,
        show_quiz_help,
        show_learn_help,
        quiz_mode,
-       learn_mode
+       learn_mode,
+       generate_lessons_from_files,
+       load_lesson_pack,
+       list_available_packs,
+       interactive_pack_selection,
+       save_lesson_pack
 
 
 # Configuration management
@@ -195,6 +201,106 @@ Type 'setup-keys' to configure missing keys.
     println(Term.Panel(status_text, title="API Key Status", style="bold blue"))
 end
 
+"""
+Interactive lesson generation interface.
+"""
+function generate_lessons_interactive()
+    println(Term.Panel("""
+# 🏭 Lesson Generation
+
+Generate lesson packs from your text files in the clean_txt directory.
+
+This process will:
+1. Read all text files from clean_txt/
+2. Create text chunks for processing
+3. Use AI to extract structured lessons
+4. Organize lessons by topic and create packs
+5. Save serialized lesson files
+
+**Note:** This requires API keys to be configured.
+""", title="Generate Lessons", style="bold cyan"))
+
+    # Check if clean_txt directory exists
+    if !isdir("clean_txt")
+        println(Term.Panel("❌ clean_txt directory not found! Please ensure text files are in the clean_txt/ directory.", title="Error", style="bold red"))
+        return
+    end
+    
+    # Get user preferences
+    print("Maximum files to process (-1 for all): ")
+    max_files_input = strip(readline())
+    max_files = isempty(max_files_input) ? -1 : parse(Int, max_files_input)
+    
+    print("Chunk size (default 1000): ")
+    chunk_size_input = strip(readline())
+    chunk_size = isempty(chunk_size_input) ? 1000 : parse(Int, chunk_size_input)
+    
+    print("Proceed with generation? (y/N): ")
+    confirm = strip(lowercase(readline()))
+    
+    if confirm != "y"
+        println("Lesson generation cancelled.")
+        return
+    end
+    
+    # Run generation
+    println("\n🚀 Starting lesson generation...")
+    try
+        lessons_by_topic = generate_lessons_from_files(
+            "clean_txt",
+            output_dir = "lesson_packs",
+            max_files = max_files,
+            chunk_size = chunk_size,
+            verbose = true
+        )
+        
+        if !isempty(lessons_by_topic)
+            println(Term.Panel("✅ Lesson generation completed successfully! Check the lesson_packs/ directory for generated files.", title="Success", style="bold green"))
+        end
+        
+    catch e
+        println(Term.Panel("❌ Error during lesson generation: $e", title="Error", style="bold red"))
+    end
+end
+
+"""
+Interactive lesson pack loading interface.
+"""
+function load_pack_interactive()
+    println(Term.Panel("""
+# 📦 Load Lesson Pack
+
+Load lessons from a file or URL to use in quiz and learn modes.
+
+**Options:**
+- Select from available local packs
+- Provide absolute file path
+- Provide URL to remote lesson pack
+
+Loaded lessons will be added to the current session.
+""", title="Load Lesson Pack", style="bold green"))
+
+    # Try interactive selection first
+    lessons = interactive_pack_selection("lesson_packs")
+    
+    if !isnothing(lessons) && !isempty(lessons)
+        println(Term.Panel("✅ Successfully loaded $(length(lessons)) lessons!", title="Success", style="bold green"))
+        
+        # TODO: Integrate loaded lessons into active session
+        # For now, just display the count by topic
+        topic_counts = Dict{String, Int}()
+        for lesson in lessons
+            topic_counts[lesson.topic] = get(topic_counts, lesson.topic, 0) + 1
+        end
+        
+        count_text = join(["$topic: $count" for (topic, count) in sort(collect(topic_counts))], "\n")
+        println(Term.Panel("**Loaded Lessons by Topic:**\n\n$count_text", title="Lesson Summary", style="cyan"))
+        
+    else
+        println(Term.Panel("No lessons were loaded.", title="Info", style="yellow"))
+    end
+end
+
 const LOGO = raw"""
 
 
@@ -254,10 +360,16 @@ function show_help()
 - **help** - Show this help message
 - **exit/quit** - Exit the application
 
+**Lesson Pack Management:**
+- **generate-lessons** - Create lesson packs from text files
+- **list-packs** - Show available lesson packs
+- **load-pack** - Load lessons from file or URL
+
 **Getting Started:**
 1. Set up your API keys with 'setup-keys'
 2. Try 'quiz' for interactive questions
 3. Try 'learn' for study materials
+4. Use 'generate-lessons' to create custom lesson packs
 """
     
     println(Panel(help_text, title="Help", style="blue", fit=true))
@@ -346,6 +458,15 @@ function main()
             continue
         elseif lowercase(user_input) == "learn"
             learn_mode()
+            continue
+        elseif lowercase(user_input) == "generate-lessons"
+            generate_lessons_interactive()
+            continue
+        elseif lowercase(user_input) == "list-packs"
+            list_available_packs()
+            continue
+        elseif lowercase(user_input) == "load-pack"
+            load_pack_interactive()
             continue
         else
             println("Unknown command. Type 'help' for available commands.")

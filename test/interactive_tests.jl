@@ -87,7 +87,8 @@ Check for:
         
         This definition includes various formatting elements to test how well they render in the terminal display.""",
         "This is a sample question that might be longer than usual to test how questions are formatted and displayed in the quiz interface?",
-        "This is the answer, which should be clearly distinguishable from the question and properly formatted."
+        "This is the answer, which should be clearly distinguishable from the question and properly formatted.",
+        "statistics/machine learning"
     )
     
     println("\n" * "="^80)

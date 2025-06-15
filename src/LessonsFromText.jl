@@ -21,6 +21,7 @@ It is incredibly important to extract useful concepts and lessons from the provi
        - Identify a question or coding exercise that could be asked about the lesson - ensuring the anser is containd in the concept definition you just created
        - Answer to the question or exercise, which should be a direct answer to the question or exercise you just created
        - Give the lesson a short name
+       - Categorize the topic as one of: "statistics/machine learning", "python", "SQL", "general programming", "hiring/interviews", or "other"
     
     **Example 1:**
     - Document Chunk: \"Any collection of possible outcomes X ⊆  is called an event; the previous
@@ -44,6 +45,7 @@ and has probability
     described by the intersection of the two events:
     C = A ∩ B = {(4, 6), (6, 4), (6, 6)}. What is the probability of event C?
       - Answer: P(C) = P(A ∩ B) = 3/36
+      - Topic: statistics/machine learning
 
 Some text will have no concepts or lessons, and will be just boilerplate information such as tables of content or forewords of books, random notes, in these cases, just return an empty list.
 
@@ -54,6 +56,7 @@ struct Lesson
     definition_and_examples::String # required field!
     question_or_exercise::String # required field!
     answer::String # required field!
+    topic::String # required field! Must be one of: "statistics/machine learning", "python", "SQL", "general programming", "hiring/interviews", "other"
 end
 
 """
