@@ -14,7 +14,8 @@ function generate_lessons_from_files(
     output_dir::String = "lesson_packs",
     max_files::Int = -1,
     chunk_size::Int = 1000,
-    verbose::Bool = true
+    verbose::Bool = true,
+    use_async::Bool = true
 )
     println(Term.Panel("""
 # 🏭 Lesson Generation Pipeline
@@ -56,7 +57,11 @@ Processing text files to generate structured lessons...
     
     # Process chunks with progress tracking and error handling
     println("\n🧠 Processing chunks into lessons...")
-    all_lessons = process_chunks_with_progress(chunks)
+    all_lessons = if use_async
+        process_chunks_async(chunks)
+    else
+        process_chunks_with_progress(chunks)
+    end
     
     if isempty(all_lessons)
         println(Term.Panel("❌ No lessons were successfully generated!", title="Error", style="bold red"))
@@ -110,6 +115,65 @@ function process_chunks_with_progress(chunks::Tuple{Vector{SubString{String}}, V
     end
     
     println("\\n\\n📊 Processing Complete:")
+    println("   ✅ Successfully generated: $successful_extractions lessons")
+    println("   ❌ Failed extractions: $failed_extractions")
+    println("   📈 Success rate: $(round(successful_extractions/total_chunks*100, digits=1))%")
+    
+    return all_lessons
+end
+
+"""
+Process chunks asynchronously to improve performance.
+import RAGTools as RT
+    # Get all text files
+    file_paths = generate_file_paths("clean_txt")
+    chunks = RT.get_chunks(
+        RT.FileChunker(), 
+        file_paths[1:2];
+        sources = file_paths[1:2],
+        verbose = false,
+        separators = ["\n\n", ". ", "\n", " "],
+        max_length = 1000
+    )
+
+process_chunks_async(chunks)
+
+"""
+function process_chunks_async(chunks::Tuple{Vector{SubString{String}}, Vector{String}})::Vector{Lesson}
+    allchunks = chunks[1]
+    total_chunks = length(allchunks)
+    successful_extractions = 0
+    failed_extractions = 0
+    
+    println("Processing $total_chunks chunks asynchronously...")
+    
+    # Create a function that wraps aiextract with error handling
+    function extract_with_error_handling(text_chunk)
+        msg = PT.aiextract(text_chunk; return_type=Lesson)
+        return msg.content
+    end
+    
+    # Use asyncmap to process all chunks concurrently
+    responses = asyncmap(extract_with_error_handling, allchunks)
+    
+    # Process results and collect lessons
+    all_lessons = Lesson[]
+    for (i, lesson) in enumerate(responses)
+        if !isnothing(lesson)
+            push!(all_lessons, lesson)
+            successful_extractions += 1
+        else
+            failed_extractions += 1
+        end
+        
+        # Update progress every 100 chunks or at the end
+        if i % 100 == 0 || i == total_chunks
+            percentage = round(i/total_chunks*100, digits=1)
+            println("[$i/$total_chunks] $percentage% - ✅ $successful_extractions lessons | ❌ $failed_extractions failed")
+        end
+    end
+    
+    println("\\n\\n📊 Async Processing Complete:")
     println("   ✅ Successfully generated: $successful_extractions lessons")
     println("   ❌ Failed extractions: $failed_extractions")
     println("   📈 Success rate: $(round(successful_extractions/total_chunks*100, digits=1))%")
