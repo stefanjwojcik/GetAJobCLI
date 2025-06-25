@@ -1,9 +1,20 @@
 ## Extracting Lessons from text chunks - this works surprisingly well 
+using JSON3
 
 function generate_file_paths(dirname::String)
     allfiles = readdir(dirname)
     paths_to_files = joinpath.(dirname, allfiles)
     return paths_to_files
+end
+
+@enum LessonTopic begin 
+    StatisticsMachineLearning
+    Python
+    SQL
+    GeneralProgramming
+    HiringInterviews
+    ExperimentalDesign
+    Miscellaneous
 end
 
 """
@@ -21,9 +32,16 @@ It is incredibly important to extract useful concepts and lessons from the provi
        - Identify a question or coding exercise that could be asked about the lesson - ensuring the anser is containd in the concept definition you just created
        - Answer to the question or exercise, which should be a direct answer to the question or exercise you just created
        - Give the lesson a short name
-       - Topic MUST be one of: statistics/machine learning, python, SQL, general programming, hiring/interviews, or other
+       - LessonTopic: 
+            - StatisticsMachineLearning - for lessons related to statistics, machine learning, or data analysis concepts
+            - Python - for lessons related to Python programming, libraries, or data analysis techniques
+            - SQL- for lessons related to SQL queries, database management, or data manipulation
+            - GeneralProgramming- for lessons related to general programming concepts, algorithms, or data structures
+            - HiringInterviews - for lessons related to job interviews, hiring processes, or interview preparation
+            - ExperimentalDesign - for lessons related to experimental design, A/B testing, or statistical experiments
+            - Miscellaneous - for lessons that do not fit into the above categories, such as general knowledge or unrelated topics
     
-    **Example 1:**
+**Example 1:**
     - Document Chunk: \"Any collection of possible outcomes X ⊆  is called an event; the previous
 definition assigns a probability of P(X ) = |X |/|| to such an event. Events are sets
 and we can apply the usual operations on them: Let A be as above the event of having
@@ -36,18 +54,20 @@ and has probability
  3
  P(C) = P(A ∩ B) = .
  36\"
-    - Extracted items:
-      - Short Name: Sets and events in probability theory
-      - Concept or Lesson: how to calculate the probability of an event using the intersection of two events
-      - Definition and Examples: Any collection of possible outcomes can be called an event, and the probability of an event can be calculated as the ratio of the number of outcomes in the event to the total number of outcomes. For example in a dice roll, if A is the event of rolling a sum of at least 10, and B is the event that both dice show an even number, then the intersection of these two events, C, represents the outcomes where both conditions are satisfied. The probability of this intersection can be calculated as P(C) = P(A ∩ B) = 3/36.
-      - Question or Exercise: Let A be the event of having
-    a sum of at least 10 in a dice roll. Let us further denote by B the event that both dice show an even number; thus, B = {(2, 2), (2, 4), (2, 6), (4, 2), (4, 4), (4, 6), (6, 2), (6, 4), (6, 6)} and |B| = 9. The event C of rolling a sum of at least 10 and both dice even is then
-    described by the intersection of the two events:
-    C = A ∩ B = {(4, 6), (6, 4), (6, 6)}. What is the probability of event C?
-      - Answer: P(C) = P(A ∩ B) = 3/36
-      - Topic: statistics/machine learning
+**Output:**
+    Lesson(short_name="Sets and events in probability theory",
+           concept_or_lesson="how to calculate the probability of an event using the intersection of two events",
+           definition_and_examples="Any collection of possible outcomes can be called an event, and the probability of an event can be calculated as the ratio of the number of outcomes in the event to the total number of outcomes. For example in a dice roll, if A is the event of rolling a sum of at least 10, and B is the event that both dice show an even number, then the intersection of these two events, C, represents the outcomes where both conditions are satisfied. The probability of this intersection can be calculated as P(C) = P(A ∩ B) = 3/36.",
+           question_or_exercise="Let A be the event of having a sum of at least 10 in a dice roll. Let us further denote by B the event that both dice show an even number; thus, B = {(2, 2), (2, 4), (2, 6), (4, 2), (4, 4), (4, 6), (6, 2), (6, 4), (6, 6)} and |B| = 9. The event C of rolling a sum of at least 10 and both dice even is then described by the intersection of the two events: C = A ∩ B = {(4, 6), (6, 4), (6, 6)}. What is the probability of event C?",
+           answer="P(C) = P(A ∩ B) = 3/36",
+           topic=:StatisticsMachineLearning)
 
 Some text will have no concepts or lessons, and will be just boilerplate information such as tables of content or forewords of books, random notes, in these cases, just return an empty list.
+
+**Example 2:**
+    - Document Chunk: \"This is a table of contents for a book on data science. It includes chapters on statistics, machine learning, and data analysis.\"
+**Output:**
+    Lesson("", "", "", "", "", :Miscellaneous)
 
 """
 struct Lesson 
@@ -56,8 +76,12 @@ struct Lesson
     definition_and_examples::String # required field!
     question_or_exercise::String # required field!
     answer::String # required field!
-    topic::String # required field! Must be one of: "statistics/machine learning", "python", "SQL", "general programming", "hiring/interviews", "other"
+    topic::LessonTopic # required field! Must be one of: "statistics/machine learning", "python", "SQL", "general programming", "hiring/interviews", "other"
 end
+
+# Custom JSON3 serialization for LessonTopic enum
+JSON3.write(io::IO, topic::LessonTopic) = JSON3.write(io, String(Symbol(topic)))
+JSON3.write(topic::LessonTopic) = String(Symbol(topic))
 
 """
 ## Select some resources to index in a RAG system 
@@ -187,6 +211,6 @@ $(lesson.definition_and_examples)
 **$(lesson.answer)**
 """
     
-    println(Term.Panel(Term.parse_md(summary_markdown), title="Lesson Summary", style="bold cyan"))
+    println(Term.Panel(summary_markdown, title="Lesson Summary", style="bold cyan"))
 end
 

@@ -136,7 +136,7 @@ import RAGTools as RT
         max_length = 1000
     )
 
-process_chunks_async(chunks)
+lessons = GetAJobCLI.process_chunks_async(chunks)
 
 """
 function process_chunks_async(chunks::Tuple{Vector{SubString{String}}, Vector{String}})::Vector{Lesson}
@@ -159,7 +159,7 @@ function process_chunks_async(chunks::Tuple{Vector{SubString{String}}, Vector{St
     # Process results and collect lessons
     all_lessons = Lesson[]
     for (i, lesson) in enumerate(responses)
-        if !isnothing(lesson)
+        if lesson isa Lesson && lesson.short_name != ""
             push!(all_lessons, lesson)
             successful_extractions += 1
         else
@@ -188,7 +188,7 @@ function split_lessons_by_topic(lessons::Vector{Lesson})::Dict{String, Vector{Le
     lessons_by_topic = Dict{String, Vector{Lesson}}()
     
     for lesson in lessons
-        topic = lesson.topic
+        topic = String(Symbol(lesson.topic))
         if !haskey(lessons_by_topic, topic)
             lessons_by_topic[topic] = Lesson[]
         end
@@ -276,7 +276,7 @@ function save_lesson_pack(lessons::Vector{Lesson}, filename::String, pack_name::
             :name => pack_name,
             :created_at => string(now()),
             :lesson_count => length(lessons),
-            :topics => unique([lesson.topic for lesson in lessons]),
+            :topics => unique([String(Symbol(lesson.topic)) for lesson in lessons]),
             :version => "1.0"
         ),
         :lessons => lessons
@@ -289,6 +289,33 @@ function save_lesson_pack(lessons::Vector{Lesson}, filename::String, pack_name::
         println("❌ Error saving $filename: $e")
         return false
     end
+end
+
+"""
+Convert string topic to LessonTopic enum.
+"""
+function string_to_lesson_topic(topic_string::String)::LessonTopic
+    # Map string values to enum values
+    topic_map = Dict(
+        "statistics/machine learning" => StatisticsMachineLearning,
+        "StatisticsMachineLearning" => StatisticsMachineLearning,
+        "Predictive Modeling" => StatisticsMachineLearning,
+        "Statistics & Experimentation" => ExperimentalDesign,
+        "Statistics" => StatisticsMachineLearning,
+        "python" => Python,
+        "Python" => Python,
+        "SQL" => SQL,
+        "sql" => SQL,
+        "general programming" => GeneralProgramming,
+        "GeneralProgramming" => GeneralProgramming,
+        "hiring/interviews" => HiringInterviews,
+        "HiringInterviews" => HiringInterviews,
+        "ExperimentalDesign" => ExperimentalDesign,
+        "other" => Miscellaneous,
+        "Miscellaneous" => Miscellaneous
+    )
+    
+    return get(topic_map, topic_string, Miscellaneous)
 end
 
 """
@@ -325,13 +352,16 @@ function load_lesson_pack(source::AbstractString)::Union{Vector{Lesson}, Nothing
         lessons = Lesson[]
         for lesson_data in pack_data.lessons
             try
+                # Convert string topic to enum
+                topic_enum = string_to_lesson_topic(String(lesson_data.topic))
+                
                 lesson = Lesson(
                     lesson_data.short_name,
                     lesson_data.concept_or_lesson,
                     lesson_data.definition_and_examples,
                     lesson_data.question_or_exercise,
                     lesson_data.answer,
-                    lesson_data.topic
+                    topic_enum
                 )
                 push!(lessons, lesson)
             catch e
@@ -436,4 +466,5 @@ export generate_lessons_from_files,
        load_lesson_pack, 
        list_available_packs, 
        interactive_pack_selection,
-       save_lesson_pack
+       save_lesson_pack,
+       string_to_lesson_topic

@@ -34,6 +34,90 @@ export Lesson,
        save_lesson_pack
 
 
+# Session state management
+mutable struct SessionState
+    loaded_lessons::Vector{Lesson}
+    session_start_time::DateTime
+end
+
+# Global session state
+const SESSION = Ref{SessionState}(SessionState(Lesson[], now()))
+
+"""
+Initialize or reset the session state.
+"""
+function init_session!()
+    SESSION[] = SessionState(Lesson[], now())
+    return SESSION[]
+end
+
+"""
+Add lessons to the current session.
+"""
+function add_lessons_to_session!(lessons::Vector{Lesson})
+    append!(SESSION[].loaded_lessons, lessons)
+    println("📚 Added $(length(lessons)) lessons to session (total: $(length(SESSION[].loaded_lessons)))")
+end
+
+"""
+Get all lessons available in the current session (loaded + samples).
+"""
+function get_session_lessons()::Vector{Lesson}
+    session_lessons = copy(SESSION[].loaded_lessons)
+    
+    # Add sample lessons if no lessons are loaded
+    if isempty(session_lessons)
+        sample_lessons = load_sample_lessons()
+        append!(session_lessons, sample_lessons)
+    end
+    
+    return session_lessons
+end
+
+"""
+Clear all loaded lessons from the session.
+"""
+function clear_session_lessons!()
+    old_count = length(SESSION[].loaded_lessons)
+    SESSION[].loaded_lessons = Lesson[]
+    println("🗑️  Cleared $old_count lessons from session")
+end
+
+"""
+Show session status including loaded lessons count and topics.
+"""
+function show_session_status()
+    lessons = SESSION[].loaded_lessons
+    session_time = SESSION[].session_start_time
+    
+    if isempty(lessons)
+        status_text = """
+**Session Status:**
+- Started: $(Dates.format(session_time, "yyyy-mm-dd HH:MM:SS"))
+- Loaded Lessons: 0 (using sample lessons)
+- Available Commands: load-pack, generate-lessons
+"""
+    else
+        topic_counts = Dict{String, Int}()
+        for lesson in lessons
+            topic_str = String(Symbol(lesson.topic))
+            topic_counts[topic_str] = get(topic_counts, topic_str, 0) + 1
+        end
+        
+        topics_text = join(["$topic: $count" for (topic, count) in sort(collect(topic_counts))], ", ")
+        
+        status_text = """
+**Session Status:**
+- Started: $(Dates.format(session_time, "yyyy-mm-dd HH:MM:SS"))
+- Loaded Lessons: $(length(lessons))
+- Topics: $topics_text
+- Available Commands: quiz, learn, clear-lessons
+"""
+    end
+    
+    println(Term.Panel(status_text, title="Session Info", style="bold blue"))
+end
+
 # Configuration management
 const CONFIG_DIR = joinpath(homedir(), ".getajobcli")
 const CONFIG_FILE = joinpath(CONFIG_DIR, "config.json")
@@ -286,11 +370,14 @@ Loaded lessons will be added to the current session.
     if !isnothing(lessons) && !isempty(lessons)
         println(Term.Panel("✅ Successfully loaded $(length(lessons)) lessons!", title="Success", style="bold green"))
         
-        # TODO: Integrate loaded lessons into active session
-        # For now, just display the count by topic
+        # Add lessons to active session
+        add_lessons_to_session!(lessons)
+        
+        # Display the count by topic
         topic_counts = Dict{String, Int}()
         for lesson in lessons
-            topic_counts[lesson.topic] = get(topic_counts, lesson.topic, 0) + 1
+            topic_str = String(Symbol(lesson.topic))
+            topic_counts[topic_str] = get(topic_counts, topic_str, 0) + 1
         end
         
         count_text = join(["$topic: $count" for (topic, count) in sort(collect(topic_counts))], "\n")
@@ -365,11 +452,16 @@ function show_help()
 - **list-packs** - Show available lesson packs
 - **load-pack** - Load lessons from file or URL
 
+**Session Management:**
+- **session-status** - Show current session info and loaded lessons
+- **clear-lessons** - Clear all loaded lessons from session
+
 **Getting Started:**
 1. Set up your API keys with 'setup-keys'
-2. Try 'quiz' for interactive questions
-3. Try 'learn' for study materials
-4. Use 'generate-lessons' to create custom lesson packs
+2. Load lesson packs with 'load-pack' or use 'generate-lessons'
+3. Try 'quiz' for interactive questions using your loaded lessons
+4. Try 'learn' for study materials from your session
+5. Use 'session-status' to see what lessons are currently available
 """
     
     println(Panel(help_text, title="Help", style="blue", fit=true))
@@ -424,6 +516,9 @@ function main()
     Term.Consoles.clear()
     render_welcome()
     
+    # Initialize session
+    init_session!()
+    
     # Check API keys on startup
     check_and_warn_api_keys()
     println()
@@ -467,6 +562,12 @@ function main()
             continue
         elseif lowercase(user_input) == "load-pack"
             load_pack_interactive()
+            continue
+        elseif lowercase(user_input) == "session-status"
+            show_session_status()
+            continue
+        elseif lowercase(user_input) == "clear-lessons"
+            clear_session_lessons!()
             continue
         else
             println("Unknown command. Type 'help' for available commands.")
