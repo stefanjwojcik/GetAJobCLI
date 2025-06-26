@@ -111,11 +111,170 @@ function show_session_status()
 - Started: $(Dates.format(session_time, "yyyy-mm-dd HH:MM:SS"))
 - Loaded Lessons: $(length(lessons))
 - Topics: $topics_text
-- Available Commands: quiz, learn, clear-lessons
+- Available Commands: quiz, learn, clear-lessons, search
 """
     end
     
     println(Term.Panel(status_text, title="Session Info", style="bold blue"))
+end
+
+"""
+Search lessons using regex pattern across all text fields.
+"""
+function search_lessons(pattern::String; max_results::Int = 10)
+    lessons = get_session_lessons()
+    
+    if isempty(lessons)
+        println(Term.Panel("No lessons available to search.", title="Search", style="bold red"))
+        return
+    end
+    
+    try
+        regex = Regex(pattern, "i")  # Case insensitive search
+        matches = []
+        
+        for (i, lesson) in enumerate(lessons)
+            # Search across all text fields
+            search_text = join([
+                lesson.short_name,
+                lesson.concept_or_lesson,
+                lesson.definition_and_examples,
+                lesson.question_or_exercise,
+                lesson.answer,
+                String(Symbol(lesson.topic))
+            ], " ")
+            
+            if occursin(regex, search_text)
+                # Find which fields contain matches
+                matching_fields = String[]
+                occursin(regex, lesson.short_name) && push!(matching_fields, "name")
+                occursin(regex, lesson.concept_or_lesson) && push!(matching_fields, "concept")
+                occursin(regex, lesson.definition_and_examples) && push!(matching_fields, "definition")
+                occursin(regex, lesson.question_or_exercise) && push!(matching_fields, "question")
+                occursin(regex, lesson.answer) && push!(matching_fields, "answer")
+                occursin(regex, String(Symbol(lesson.topic))) && push!(matching_fields, "topic")
+                
+                push!(matches, (lesson, i, matching_fields))
+            end
+        end
+        
+        if isempty(matches)
+            println(Term.Panel("No lessons found matching pattern: '$pattern'", title="Search Results", style="bold yellow"))
+            return
+        end
+        
+        # Display results
+        results_text = "Found $(length(matches)) lesson(s) matching '$pattern':\n\n"
+        
+        for (i, (lesson, lesson_num, fields)) in enumerate(matches[1:min(max_results, length(matches))])
+            topic_str = String(Symbol(lesson.topic))
+            fields_str = join(fields, ", ")
+            results_text *= "**$i. $(lesson.short_name)** [$topic_str]\n"
+            results_text *= "   Matches in: $fields_str\n"
+            
+            # Show a snippet of the definition
+            definition_snippet = lesson.definition_and_examples[1:min(120, length(lesson.definition_and_examples))]
+            if length(lesson.definition_and_examples) > 120
+                definition_snippet *= "..."
+            end
+            results_text *= "   Preview: $definition_snippet\n\n"
+        end
+        
+        if length(matches) > max_results
+            results_text *= "... and $(length(matches) - max_results) more results.\n"
+            results_text *= "Use 'search \"$pattern\" --limit 20' for more results."
+        end
+        
+        println(Term.Panel(results_text, title="Search Results ($(length(matches)) found)", style="bold green"))
+        
+        # Ask if user wants to view a specific lesson
+        if length(matches) > 0
+            println("\nType 'view <number>' to see full lesson details, or press Enter to continue.")
+            print("Action: ")
+            user_input = strip(readline())
+            
+            if startswith(lowercase(user_input), "view ")
+                try
+                    num_str = replace(user_input, r"^view\s+"i => "")
+                    num = parse(Int, num_str)
+                    if 1 <= num <= min(max_results, length(matches))
+                        selected_lesson = matches[num][1]
+                        println()
+                        display_lesson_summary(selected_lesson)
+                    else
+                        println("Invalid number. Please use 1-$(min(max_results, length(matches))).")
+                    end
+                catch
+                    println("Invalid format. Use 'view <number>'.")
+                end
+            end
+        end
+        
+    catch e
+        println(Term.Panel("Invalid regex pattern: $e", title="Search Error", style="bold red"))
+    end
+end
+
+"""
+Interactive search interface.
+"""
+function search_interactive()
+    println(Term.Panel("""
+# 🔍 Search Lessons
+
+Search through all loaded lessons using regex patterns.
+
+**Examples:**
+- 'regression' - Find lessons about regression
+- 'python.*list' - Find lessons about Python lists
+- '^SQL' - Find lessons starting with SQL
+- 'interview|hiring' - Find lessons about interviews OR hiring
+
+**Commands:**
+- Type your search pattern and press Enter
+- 'back' or 'exit' - Return to main menu
+- 'help' - Show this help again
+""", title="Search Mode", style="bold magenta"))
+
+    while true
+        print("\e[35mSearch> \e[0m")
+        user_input = strip(readline())
+        
+        if isempty(user_input)
+            continue
+        elseif lowercase(user_input) in ["back", "exit", "q"]
+            println("Returning to main menu...")
+            break
+        elseif lowercase(user_input) == "help"
+            println(Term.Panel("""
+**Search Help:**
+
+- Use regular expressions for powerful pattern matching
+- Search is case-insensitive by default
+- Searches across: lesson names, concepts, definitions, questions, answers, and topics
+
+**Examples:**
+- 'statistics' - Simple text search
+- 'python.*comprehension' - Python AND comprehension
+- '(SQL|database)' - SQL OR database
+- '^Central.*Theorem' - Starts with "Central" and contains "Theorem"
+""", title="Search Help", style="blue"))
+        else
+            # Parse potential limit parameter
+            max_results = 10
+            pattern = user_input
+            
+            if occursin(r"--limit\s+\d+", user_input)
+                limit_match = match(r"--limit\s+(\d+)", user_input)
+                if !isnothing(limit_match)
+                    max_results = parse(Int, limit_match.captures[1])
+                    pattern = replace(user_input, r"\s*--limit\s+\d+" => "")
+                end
+            end
+            
+            search_lessons(pattern; max_results=max_results)
+        end
+    end
 end
 
 # Configuration management
@@ -441,6 +600,7 @@ function show_help()
 **Main Commands:**
 - **quiz** - Enter quiz mode for interactive learning
 - **learn** - Enter learn mode to study lessons
+- **search** - Search through lessons using regex patterns
 - **setup-keys** - Configure OpenAI/Anthropic API keys
 - **check-keys** - Check API key status
 - **clear** - Clear the console
@@ -568,6 +728,9 @@ function main()
             continue
         elseif lowercase(user_input) == "clear-lessons"
             clear_session_lessons!()
+            continue
+        elseif lowercase(user_input) == "search"
+            search_interactive()
             continue
         else
             println("Unknown command. Type 'help' for available commands.")
