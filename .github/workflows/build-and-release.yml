@@ -40,7 +40,7 @@ jobs:
         arch: x64
 
     - name: Cache Julia packages
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.julia
         key: ${{ runner.os }}-julia-${{ hashFiles('**/Project.toml') }}
