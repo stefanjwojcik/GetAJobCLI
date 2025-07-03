@@ -14,6 +14,13 @@ curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/GetAJobCLI/main/insta
 make build install
 ```
 
+### Recent Fixes
+- ✅ Fixed API key setup type conversion issue (`SubString{String}` → `String`)
+- ✅ Resolved `save_api_keys` method signature mismatch
+- ✅ Fixed API key loading in compiled app (keys now loaded from `~/.getajobcli/config.json`)
+- ✅ Added `ensure_api_keys_loaded()` calls before all AI operations
+- ✅ Improved precompilation workload for faster startup
+
 ## Build Methods
 
 ### Method 1: Using Make (Recommended)

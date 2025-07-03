@@ -95,6 +95,9 @@ lessons = lessonfromchunks(chunks; limit=1)
 
 """
 function lessonfromchunks(chunks::Tuple{Vector{SubString{String}}, Vector{String}}; limit=5)::Vector{Lesson}
+    # Ensure API keys are loaded before processing
+    GetAJobCLI.ensure_api_keys_loaded()
+    
     lessons = Lesson[]
     counter = 0
     @showprogress for text in chunks[1]
@@ -158,6 +161,9 @@ Evaluate if the user's answer demonstrates understanding of the core concepts, e
 """
     
     try
+        # Ensure API keys are loaded before making AI call
+        GetAJobCLI.ensure_api_keys_loaded()
+        
         result = PT.aiclassify(:InputClassifier; choices=choices, input=classification_input)
         is_correct = result.content == "correct"
         

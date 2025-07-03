@@ -31,7 +31,8 @@ export Lesson,
        load_lesson_pack,
        list_available_packs,
        interactive_pack_selection,
-       save_lesson_pack
+       save_lesson_pack,
+       ensure_api_keys_loaded
 
 
 # Session state management
@@ -121,7 +122,7 @@ end
 """
 Search lessons using regex pattern across all text fields.
 """
-function search_lessons(pattern::String; max_results::Int = 10)
+function search_lessons(pattern::AbstractString; max_results::Int = 10)
     lessons = get_session_lessons()
     
     if isempty(lessons)
@@ -320,8 +321,41 @@ function save_api_keys(openai_key::Union{String,Nothing}, anthropic_key::Union{S
     end
 end
 
-function check_and_warn_api_keys()
+"""
+Ensure API keys are loaded into environment variables from config file.
+Call this before any AI operations.
+"""
+function ensure_api_keys_loaded()
     keys = load_api_keys()
+    
+    # Always set environment variables if keys are available in config
+    if !isnothing(keys["openai_api_key"])
+        ENV["OPENAI_API_KEY"] = keys["openai_api_key"]
+    end
+    if !isnothing(keys["anthropic_api_key"])
+        ENV["ANTHROPIC_API_KEY"] = keys["anthropic_api_key"]
+    end
+    
+    return keys
+end
+
+"""
+Module initialization function - runs at runtime, not during compilation.
+This ensures API keys are loaded only when the app is actually running.
+"""
+function __init__()
+    # Load API keys from config file into environment variables
+    # This happens at runtime, not during compilation
+    try
+        ensure_api_keys_loaded()
+    catch e
+        # Silently handle any errors during initialization
+        # User will be prompted to set up keys when they try to use AI features
+    end
+end
+
+function check_and_warn_api_keys()
+    keys = ensure_api_keys_loaded()
     
     openai_available = !isnothing(keys["openai_api_key"]) || haskey(ENV, "OPENAI_API_KEY")
     anthropic_available = !isnothing(keys["anthropic_api_key"]) || haskey(ENV, "ANTHROPIC_API_KEY")
@@ -352,14 +386,6 @@ Some features may not work without proper API key configuration.
         println(Term.Panel("✅ API keys are configured and ready!", title="Status", style="bold green"))
     end
     
-    # Set environment variables if keys are available
-    if !isnothing(keys["openai_api_key"])
-        ENV["OPENAI_API_KEY"] = keys["openai_api_key"]
-    end
-    if !isnothing(keys["anthropic_api_key"])
-        ENV["ANTHROPIC_API_KEY"] = keys["anthropic_api_key"]
-    end
-    
     return true
 end
 
@@ -369,46 +395,59 @@ function setup_api_keys()
 
 Configure your API keys for OpenAI and Anthropic services.
 
-**Note:** Your keys will be saved locally and are not shared.
+**How to get API keys:**
+• OpenAI: Visit https://platform.openai.com/account/api-keys
+  - Sign up/log in to your OpenAI account
+  - Click "Create new secret key"
+  - Copy the key (starts with "sk-")
+
+• Anthropic: Visit https://console.anthropic.com/account/keys
+  - Sign up/log in to your Anthropic account
+  - Click "Create Key"
+  - Copy the key (starts with "sk-ant-")
+
+**Note:** Your keys will be saved locally in ~/.getajobcli/config.json and are not shared.
 Press Enter to skip a provider if you don't want to configure it.
 """, title="API Key Setup", style="bold cyan"))
 
     keys = load_api_keys()
     
+    # Create mutable copies to handle type conversion
+    openai_key = keys["openai_api_key"]
+    anthropic_key = keys["anthropic_api_key"]
+    
     # OpenAI setup
-    current_openai = keys["openai_api_key"]
-    openai_status = isnothing(current_openai) ? "Not configured" : "Configured (hidden)"
+    openai_status = isnothing(openai_key) ? "Not configured" : "Configured (hidden)"
     println("OpenAI API Key Status: $openai_status")
     print("Enter OpenAI API Key (or press Enter to skip): ")
     openai_input = strip(readline())
     
     if !isempty(openai_input)
-        keys["openai_api_key"] = openai_input
+        openai_key = String(openai_input)
         println("✅ OpenAI API key updated")
     end
     
     # Anthropic setup  
-    current_anthropic = keys["anthropic_api_key"]
-    anthropic_status = isnothing(current_anthropic) ? "Not configured" : "Configured (hidden)"
+    anthropic_status = isnothing(anthropic_key) ? "Not configured" : "Configured (hidden)"
     println("Anthropic API Key Status: $anthropic_status")
     print("Enter Anthropic API Key (or press Enter to skip): ")
     anthropic_input = strip(readline())
     
     if !isempty(anthropic_input)
-        keys["anthropic_api_key"] = anthropic_input
+        anthropic_key = String(anthropic_input)
         println("✅ Anthropic API key updated")
     end
     
     # Save configuration
-    if save_api_keys(keys["openai_api_key"], keys["anthropic_api_key"])
+    if save_api_keys(openai_key, anthropic_key)
         println(Term.Panel("API keys saved successfully!", title="Success", style="bold green"))
         
         # Set environment variables
-        if !isnothing(keys["openai_api_key"])
-            ENV["OPENAI_API_KEY"] = keys["openai_api_key"]
+        if !isnothing(openai_key)
+            ENV["OPENAI_API_KEY"] = openai_key
         end
-        if !isnothing(keys["anthropic_api_key"])
-            ENV["ANTHROPIC_API_KEY"] = keys["anthropic_api_key"]
+        if !isnothing(anthropic_key)
+            ENV["ANTHROPIC_API_KEY"] = anthropic_key
         end
     else
         println(Term.Panel("Failed to save API keys!", title="Error", style="bold red"))
@@ -679,7 +718,7 @@ function main()
     # Initialize session
     init_session!()
     
-    # Check API keys on startup
+    # Check API keys on startup (keys are loaded via __init__())
     check_and_warn_api_keys()
     println()
 

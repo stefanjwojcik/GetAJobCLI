@@ -84,6 +84,9 @@ end
 Process chunks into lessons with progress tracking and error handling.
 """
 function process_chunks_with_progress(chunks::Tuple{Vector{SubString{String}}, Vector{String}})::Vector{Lesson}
+    # Ensure API keys are loaded before processing
+    GetAJobCLI.ensure_api_keys_loaded()
+    
     all_lessons = Lesson[]
     total_chunks = length(chunks[1])
     successful_extractions = 0
@@ -140,6 +143,9 @@ lessons = GetAJobCLI.process_chunks_async(chunks)
 
 """
 function process_chunks_async(chunks::Tuple{Vector{SubString{String}}, Vector{String}})::Vector{Lesson}
+    # Ensure API keys are loaded before processing
+    GetAJobCLI.ensure_api_keys_loaded()
+    
     allchunks = chunks[1]
     total_chunks = length(allchunks)
     successful_extractions = 0

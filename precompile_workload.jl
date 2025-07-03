@@ -12,7 +12,7 @@ using GetAJobCLI
 # Exercise configuration management
 println("Testing configuration management...")
 GetAJobCLI.ensure_config_dir()
-keys = GetAJobCLI.load_api_keys()
+# Note: API keys are loaded via __init__() at runtime, not during compilation
 
 # Exercise session management
 println("Testing session management...")
