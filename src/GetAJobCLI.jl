@@ -484,24 +484,66 @@ Type 'setup-keys' to configure missing keys.
 end
 
 """
-Interactive lesson generation interface.
+Interactive lesson generation interface with topic-based generation as default.
 """
 function generate_lessons_interactive()
     println(Term.Panel("""
 # 🏭 Lesson Generation
 
-Generate lesson packs from your text files in the clean_txt directory.
+Choose your lesson generation method:
 
-This process will:
-1. Read all text files from clean_txt/
-2. Create text chunks for processing
-3. Use AI to extract structured lessons
-4. Organize lessons by topic and create packs
-5. Save serialized lesson files
+**1. 🎯 Topic-Based Generation (Recommended)**
+   - Select a specific topic (e.g., "Machine Learning", "SQL")
+   - AI generates focused concepts and detailed lessons
+   - Higher quality, targeted content
+   - Faster and more cost-effective
 
-**Note:** This requires API keys to be configured.
+**2. 📄 Text File Processing**
+   - Extract lessons from your own text files in clean_txt/
+   - Process existing documents and materials
+   - Requires text files in clean_txt/ directory
+
+**Note:** Both methods require API keys to be configured.
 """, title="Generate Lessons", style="bold cyan"))
 
+    println("Generation Methods:")
+    println("  1. Topic-Based Generation (Default)")
+    println("  2. Text File Processing")
+    println("  0. Back to main menu")
+    
+    print("\nSelect method (1, 2, or 0 to exit): ")
+    method_input = strip(readline())
+    
+    # Check for exit commands
+    if lowercase(method_input) in ["0", "back", "exit", "quit", "cancel"]
+        println("Returning to main menu...")
+        return
+    end
+    
+    generation_method = if isempty(method_input) || method_input == "1"
+        1
+    elseif method_input == "2"
+        2
+    else
+        println("Invalid selection, using default (Topic-Based Generation)")
+        1
+    end
+    
+    if generation_method == 1
+        # Use the new topic-based generation
+        println("\n🎯 Using Topic-Based Generation...")
+        interactive_topic_lesson_generation()
+    else
+        # Use the original text file processing
+        println("\n📄 Using Text File Processing...")
+        generate_lessons_from_text_files()
+    end
+end
+
+"""
+Original text file processing lesson generation.
+"""
+function generate_lessons_from_text_files()
     # Check if clean_txt directory exists
     if !isdir("clean_txt")
         println(Term.Panel("❌ clean_txt directory not found! Please ensure text files are in the clean_txt/ directory.", title="Error", style="bold red"))
@@ -509,16 +551,73 @@ This process will:
     end
     
     # Get user preferences
-    print("Maximum files to process (-1 for all): ")
+    println("\n📋 Category Selection:")
+    println("Available categories:")
+    available_categories = list_available_categories()
+    for (i, category) in enumerate(available_categories)
+        println("  $i. $category")
+    end
+    println("  0. All categories (default)")
+    
+    print("\nSelect categories (comma-separated numbers, Enter for all, or 'cancel' to exit): ")
+    category_input = strip(readline())
+    
+    # Check for exit commands
+    if lowercase(category_input) in ["cancel", "exit", "back", "quit"]
+        println("Returning to main menu...")
+        return
+    end
+    
+    target_categories = String[]
+    if !isempty(category_input)
+        try
+            selected_indices = parse.(Int, split(category_input, ","))
+            # Filter out 0 and invalid indices
+            valid_indices = filter(i -> 1 <= i <= length(available_categories), selected_indices)
+            target_categories = [available_categories[i] for i in valid_indices]
+            
+            if !isempty(target_categories)
+                println("Selected categories: $(join(target_categories, ", "))")
+            else
+                println("No valid categories selected, using all categories")
+            end
+        catch
+            println("Invalid input, using all categories")
+        end
+    else
+        println("Using all categories")
+    end
+    
+    print("\nMaximum files to process (-1 for all, or 'cancel' to exit): ")
     max_files_input = strip(readline())
+    
+    # Check for exit commands
+    if lowercase(max_files_input) in ["cancel", "exit", "back", "quit"]
+        println("Returning to main menu...")
+        return
+    end
+    
     max_files = isempty(max_files_input) ? -1 : parse(Int, max_files_input)
     
-    print("Chunk size (default 1000): ")
+    print("Chunk size (default 1000, or 'cancel' to exit): ")
     chunk_size_input = strip(readline())
+    
+    # Check for exit commands
+    if lowercase(chunk_size_input) in ["cancel", "exit", "back", "quit"]
+        println("Returning to main menu...")
+        return
+    end
+    
     chunk_size = isempty(chunk_size_input) ? 1000 : parse(Int, chunk_size_input)
     
-    print("Proceed with generation? (y/N): ")
+    print("Proceed with generation? (y/N, or 'cancel' to exit): ")
     confirm = strip(lowercase(readline()))
+    
+    # Check for exit commands
+    if lowercase(confirm) in ["cancel", "exit", "back", "quit"]
+        println("Returning to main menu...")
+        return
+    end
     
     if confirm != "y"
         println("Lesson generation cancelled.")
@@ -526,14 +625,15 @@ This process will:
     end
     
     # Run generation
-    println("\n🚀 Starting lesson generation...")
+    println("\n🚀 Starting lesson generation from text files...")
     try
         lessons_by_topic = generate_lessons_from_files(
             "clean_txt",
             output_dir = "lesson_packs",
             max_files = max_files,
             chunk_size = chunk_size,
-            verbose = true
+            verbose = true,
+            target_categories = target_categories
         )
         
         if !isempty(lessons_by_topic)
@@ -647,7 +747,7 @@ function show_help()
 - **exit/quit** - Exit the application
 
 **Lesson Pack Management:**
-- **generate-lessons** - Create lesson packs from text files
+- **generate-lessons** - Create lesson packs (topic-based or from text files)
 - **list-packs** - Show available lesson packs
 - **load-pack** - Load lessons from file or URL
 
