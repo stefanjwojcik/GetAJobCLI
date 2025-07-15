@@ -7,20 +7,15 @@ using HTTP
 using Dates
 using SHA
 
-# Checkpoint structure for resumable processing
-struct ProcessingCheckpoint
+# Batch processing structure for saving lessons in groups
+mutable struct BatchProcessor
     session_id::String
-    input_dir::String
-    chunk_size::Int
-    target_categories::Vector{String}
-    processed_chunks::Set{String}  # SHA256 hashes of processed chunks
-    total_chunks::Int
-    successful_extractions::Int
-    failed_extractions::Int
-    lessons_generated::Vector{Lesson}
-    created_at::DateTime
-    last_updated::DateTime
-    checkpoint_file::String
+    batch_size::Int
+    current_batch::Vector{Lesson}
+    batch_number::Int
+    total_lessons_saved::Int
+    output_dir::String
+    topic_prefix::String
 end
 
 # Simple tracking for costs and tokens
@@ -164,73 +159,360 @@ const CATEGORY_PATTERNS = Dict{String, Vector{Regex}}(
 )
 
 """
-Generate a SHA256 hash for a text chunk to uniquely identify it.
+Generate a SHA256 hash for lesson content to detect duplicates.
 """
-function chunk_hash(chunk::Union{String, SubString{String}})::String
-    return bytes2hex(sha256(String(chunk)))
+function lesson_hash(lesson::Lesson)::String
+    content = string(lesson.short_name, lesson.concept_or_lesson, lesson.definition_and_examples, lesson.question_or_exercise, lesson.answer)
+    return bytes2hex(sha256(content))
 end
 
 """
-Create a new checkpoint for a processing session.
+Check if a lesson pack with identical content already exists.
 """
-function create_checkpoint(
-    input_dir::String,
-    chunk_size::Int,
-    target_categories::Vector{String},
-    total_chunks::Int,
-    output_dir::String = "lesson_packs"
-)::ProcessingCheckpoint
-    session_id = string(now())[1:19] |> s -> replace(s, ":" => "-")
-    checkpoint_file = joinpath(output_dir, "checkpoint_$(session_id).json")
+function pack_exists(lessons::Vector{Lesson}, output_dir::String, topic_prefix::String)::Bool
+    if !isdir(output_dir)
+        return false
+    end
     
-    return ProcessingCheckpoint(
+    # Generate hash for current lesson batch
+    current_hashes = Set(lesson_hash(lesson) for lesson in lessons)
+    
+    # Check existing packs with same topic prefix
+    for file in readdir(output_dir)
+        if startswith(file, topic_prefix) && endswith(file, ".json")
+            filepath = joinpath(output_dir, file)
+            try
+                # Read the pack data directly to avoid loading issues
+                pack_data = JSON3.read(read(filepath, String))
+                if haskey(pack_data, :lessons) && length(pack_data.lessons) == length(lessons)
+                    existing_hashes = Set()
+                    for lesson_data in pack_data.lessons
+                        try
+                            content = string(lesson_data.short_name, lesson_data.concept_or_lesson, lesson_data.definition_and_examples, lesson_data.question_or_exercise, lesson_data.answer)
+                            push!(existing_hashes, bytes2hex(sha256(content)))
+                        catch
+                            # Skip malformed lesson data
+                            continue
+                        end
+                    end
+                    
+                    if current_hashes == existing_hashes
+                        println("📋 Identical pack already exists: $file")
+                        return true
+                    end
+                end
+            catch e
+                # Skip corrupted files
+                continue
+            end
+        end
+    end
+    
+    return false
+end
+
+"""
+Create a new batch processor for saving lessons in groups.
+"""
+function create_batch_processor(
+    output_dir::String = "lesson_packs",
+    topic_prefix::String = "batch",
+    batch_size::Int = 25
+)::BatchProcessor
+    session_id = string(now())[1:19] |> s -> replace(s, ":" => "-")
+    
+    return BatchProcessor(
         session_id,
-        input_dir,
-        chunk_size,
-        target_categories,
-        Set{String}(),
-        total_chunks,
-        0,
-        0,
+        batch_size,
         Lesson[],
-        now(),
-        now(),
-        checkpoint_file
+        1,
+        0,
+        output_dir,
+        topic_prefix
     )
 end
 
 """
-Save checkpoint to disk.
+Find the appropriate part file for a topic, or create a new one if current part is full.
+Returns (filename, part_number, existing_lessons_count).
 """
-function save_checkpoint(checkpoint::ProcessingCheckpoint)
-    checkpoint_data = Dict(
-        :session_id => checkpoint.session_id,
-        :input_dir => checkpoint.input_dir,
-        :chunk_size => checkpoint.chunk_size,
-        :target_categories => checkpoint.target_categories,
-        :processed_chunks => collect(checkpoint.processed_chunks),
-        :total_chunks => checkpoint.total_chunks,
-        :successful_extractions => checkpoint.successful_extractions,
-        :failed_extractions => checkpoint.failed_extractions,
-        :lessons_generated => checkpoint.lessons_generated,
-        :created_at => string(checkpoint.created_at),
-        :last_updated => string(now()),
-        :checkpoint_file => checkpoint.checkpoint_file
-    )
+function find_or_create_part_file(topic_prefix::String, output_dir::String, max_lessons_per_part::Int = 25)::Tuple{String, Int, Int}
+    if !isdir(output_dir)
+        mkpath(output_dir)
+    end
+    
+    # Find existing part files for this topic
+    part_files = []
+    for file in readdir(output_dir)
+        if startswith(file, topic_prefix) && endswith(file, ".json") && contains(file, "_part")
+            # Extract part number from filename like "Statistics_part1.json"
+            part_match = match(r"_part(\d+)\.json$", file)
+            if !isnothing(part_match)
+                part_num = parse(Int, part_match.captures[1])
+                push!(part_files, (file, part_num))
+            end
+        end
+    end
+    
+    # Sort by part number
+    sort!(part_files, by=x->x[2])
+    
+    # Check each part file from highest to lowest to find one with space
+    for (filename, part_num) in reverse(part_files)
+        filepath = joinpath(output_dir, filename)
+        try
+            # Read existing pack
+            pack_data = JSON3.read(read(filepath, String))
+            if haskey(pack_data, :lessons)
+                existing_count = length(pack_data.lessons)
+                if existing_count < max_lessons_per_part
+                    # Found a part file with space
+                    return (filepath, part_num, existing_count)
+                end
+            end
+        catch e
+            @warn "Error reading pack file $filepath: $e"
+            continue
+        end
+    end
+    
+    # No existing part file has space, create new part
+    next_part_num = isempty(part_files) ? 1 : maximum(pf[2] for pf in part_files) + 1
+    new_filename = joinpath(output_dir, "$(topic_prefix)_part$(next_part_num).json")
+    
+    return (new_filename, next_part_num, 0)
+end
+
+"""
+Check if any lessons in the batch already exist in the target file.
+Returns (unique_lessons, duplicates_found).
+"""
+function filter_duplicate_lessons(new_lessons::Vector{Lesson}, filepath::String)::Tuple{Vector{Lesson}, Int}
+    if !isfile(filepath)
+        return (new_lessons, 0)
+    end
     
     try
-        write(checkpoint.checkpoint_file, JSON3.write(checkpoint_data, allow_inf=false))
-        return true
+        # Read existing pack
+        pack_data = JSON3.read(read(filepath, String))
+        if !haskey(pack_data, :lessons)
+            return (new_lessons, 0)
+        end
+        
+        # Generate hashes for existing lessons
+        existing_hashes = Set{String}()
+        for lesson_data in pack_data.lessons
+            try
+                content = string(lesson_data.short_name, lesson_data.concept_or_lesson, 
+                               lesson_data.definition_and_examples, lesson_data.question_or_exercise, 
+                               lesson_data.answer)
+                push!(existing_hashes, bytes2hex(sha256(content)))
+            catch
+                # Skip malformed lesson data
+                continue
+            end
+        end
+        
+        # Filter out duplicates from new lessons
+        unique_lessons = Lesson[]
+        duplicates_found = 0
+        
+        for lesson in new_lessons
+            lesson_hash_val = lesson_hash(lesson)
+            if lesson_hash_val ∉ existing_hashes
+                push!(unique_lessons, lesson)
+            else
+                duplicates_found += 1
+            end
+        end
+        
+        return (unique_lessons, duplicates_found)
+        
     catch e
-        @warn "Failed to save checkpoint: $e"
-        return false
+        @warn "Error reading existing pack file $filepath: $e"
+        return (new_lessons, 0)
     end
 end
 
 """
-Load checkpoint from disk.
+Append lessons to an existing part file or create a new part if current is full.
 """
-function load_checkpoint(checkpoint_file::String)::Union{ProcessingCheckpoint, Nothing}
+function append_lessons_to_part(
+    lessons::Vector{Lesson}, 
+    topic_prefix::String, 
+    output_dir::String, 
+    max_lessons_per_part::Int = 25
+)::Bool
+    if isempty(lessons)
+        return false
+    end
+    
+    # Find appropriate part file
+    (filepath, part_num, existing_count) = find_or_create_part_file(topic_prefix, output_dir, max_lessons_per_part)
+    
+    # Filter out duplicates
+    (unique_lessons, duplicates_found) = filter_duplicate_lessons(lessons, filepath)
+    
+    if duplicates_found > 0
+        println("⚠️  Filtered out $duplicates_found duplicate lessons")
+    end
+    
+    if isempty(unique_lessons)
+        println("ℹ️  No new lessons to add - all were duplicates")
+        return false
+    end
+    
+    # Determine how many lessons we can add to current part
+    available_space = max_lessons_per_part - existing_count
+    lessons_to_add = min(length(unique_lessons), available_space)
+    
+    if lessons_to_add < length(unique_lessons)
+        println("ℹ️  Part $part_num can only fit $lessons_to_add lessons, will create additional parts for remaining $(length(unique_lessons) - lessons_to_add)")
+    end
+    
+    # Process lessons in chunks that fit in parts
+    remaining_lessons = unique_lessons
+    current_part_num = part_num
+    current_filepath = filepath
+    current_existing_count = existing_count
+    
+    while !isempty(remaining_lessons)
+        # Determine how many lessons to add to current part
+        available_space = max_lessons_per_part - current_existing_count
+        lessons_for_this_part = remaining_lessons[1:min(length(remaining_lessons), available_space)]
+        
+        # Load existing lessons if file exists
+        existing_lessons = Lesson[]
+        if isfile(current_filepath)
+            try
+                pack_data = JSON3.read(read(current_filepath, String))
+                if haskey(pack_data, :lessons)
+                    for lesson_data in pack_data.lessons
+                        try
+                            topic_enum = string_to_lesson_topic(String(lesson_data.topic))
+                            lesson = Lesson(
+                                lesson_data.short_name,
+                                lesson_data.concept_or_lesson,
+                                lesson_data.definition_and_examples,
+                                lesson_data.question_or_exercise,
+                                lesson_data.answer,
+                                topic_enum
+                            )
+                            push!(existing_lessons, lesson)
+                        catch e
+                            @warn "Skipping invalid lesson in existing pack: $e"
+                        end
+                    end
+                end
+            catch e
+                @warn "Error reading existing pack file $current_filepath: $e"
+                existing_lessons = Lesson[]
+            end
+        end
+        
+        # Combine existing and new lessons
+        combined_lessons = vcat(existing_lessons, lessons_for_this_part)
+        
+        # Save the combined pack
+        pack_name = "$(topic_prefix) - Part $(current_part_num)"
+        success = save_lesson_pack(combined_lessons, current_filepath, pack_name)
+        
+        if success
+            action = current_existing_count > 0 ? "Updated" : "Created"
+            println("💾 $action $(basename(current_filepath)): $(length(combined_lessons)) lessons ($(length(lessons_for_this_part)) new)")
+        else
+            @warn "Failed to save lessons to $current_filepath"
+            return false
+        end
+        
+        # Remove processed lessons from remaining
+        remaining_lessons = remaining_lessons[(length(lessons_for_this_part)+1):end]
+        
+        # Prepare for next part if needed
+        if !isempty(remaining_lessons)
+            current_part_num += 1
+            current_filepath = joinpath(output_dir, "$(topic_prefix)_part$(current_part_num).json")
+            current_existing_count = 0
+        end
+    end
+    
+    return true
+end
+
+"""
+Save batch of lessons organized by topic to appropriate part files.
+"""
+function save_batch_by_topic(batch_processor::BatchProcessor)::Bool
+    if isempty(batch_processor.current_batch)
+        return false
+    end
+    
+    # Group lessons by topic
+    lessons_by_topic = Dict{String, Vector{Lesson}}()
+    for lesson in batch_processor.current_batch
+        topic = String(Symbol(lesson.topic))
+        if !haskey(lessons_by_topic, topic)
+            lessons_by_topic[topic] = Lesson[]
+        end
+        push!(lessons_by_topic[topic], lesson)
+    end
+    
+    # Save each topic's lessons to appropriate part files
+    total_saved = 0
+    for (topic, lessons) in lessons_by_topic
+        # Use topic as prefix for part files
+        topic_prefix = replace(topic, "/" => "_", " " => "_")
+        
+        success = append_lessons_to_part(lessons, topic_prefix, batch_processor.output_dir, 25)
+        if success
+            total_saved += length(lessons)
+        end
+    end
+    
+    return total_saved > 0
+end
+
+"""
+DEPRECATED: Save batch of lessons to disk if it doesn't already exist.
+Use save_batch_by_topic instead for better lesson management.
+"""
+function save_batch_if_new(batch_processor::BatchProcessor)::Bool
+    if isempty(batch_processor.current_batch)
+        return false
+    end
+    
+    # Use the new topic-organized append logic
+    return save_batch_by_topic(batch_processor)
+end
+
+"""
+DEPRECATED: Create checkpoint function - now using batch processing.
+"""
+function create_checkpoint(args...; kwargs...)
+    println("⚠️  Checkpoints are deprecated - use create_batch_processor() instead.")
+    return nothing
+end
+
+"""
+DEPRECATED: Save checkpoint function - now using batch processing.
+"""
+function save_checkpoint(args...; kwargs...)
+    println("⚠️  Checkpoints are deprecated - use save_batch_if_new() instead.")
+    return false
+end
+
+"""
+DEPRECATED: Chunk hash function - now using lesson_hash() instead.
+"""
+function chunk_hash(args...; kwargs...)
+    println("⚠️  chunk_hash is deprecated - use lesson_hash() instead.")
+    return ""
+end
+
+"""
+DEPRECATED: Checkpoint functions removed - using batch processing instead.
+"""
+function load_checkpoint(checkpoint_file::String)::Union{Nothing, Nothing}
     try
         if !isfile(checkpoint_file)
             return nothing
@@ -257,20 +539,7 @@ function load_checkpoint(checkpoint_file::String)::Union{ProcessingCheckpoint, N
             end
         end
         
-        return ProcessingCheckpoint(
-            data.session_id,
-            data.input_dir,
-            data.chunk_size,
-            Vector{String}(data.target_categories),
-            Set{String}(data.processed_chunks),
-            data.total_chunks,
-            data.successful_extractions,
-            data.failed_extractions,
-            lessons,
-            DateTime(data.created_at),
-            DateTime(data.last_updated),
-            checkpoint_file
-        )
+        return nothing  # Checkpoints are deprecated
         
     catch e
         @warn "Failed to load checkpoint: $e"
@@ -279,39 +548,22 @@ function load_checkpoint(checkpoint_file::String)::Union{ProcessingCheckpoint, N
 end
 
 """
-List available checkpoints in the output directory.
+DEPRECATED: List checkpoints function - now using batch processing.
 """
 function list_checkpoints(output_dir::String = "lesson_packs")::Vector{String}
-    if !isdir(output_dir)
-        return String[]
-    end
-    
-    checkpoint_files = filter(f -> startswith(f, "checkpoint_") && endswith(f, ".json"), readdir(output_dir))
-    return [joinpath(output_dir, f) for f in checkpoint_files]
+    println("⚠️  Checkpoints are deprecated - use batch processing instead.")
+    return String[]
 end
 
 """
-Clean up old checkpoints (older than 7 days).
+DEPRECATED: Cleanup checkpoints function - now using batch processing.
 """
 function cleanup_old_checkpoints(output_dir::String = "lesson_packs", max_age_days::Int = 7)
-    checkpoint_files = list_checkpoints(output_dir)
-    cutoff_time = now() - Day(max_age_days)
-    
-    for checkpoint_file in checkpoint_files
-        try
-            file_time = DateTime(unix2datetime(stat(checkpoint_file).mtime))
-            if file_time < cutoff_time
-                rm(checkpoint_file)
-                println("🗑️  Cleaned up old checkpoint: $(basename(checkpoint_file))")
-            end
-        catch e
-            @warn "Error checking checkpoint file age: $e"
-        end
-    end
+    println("⚠️  Checkpoint cleanup is deprecated - checkpoints have been replaced with batch processing.")
 end
 
 """
-Generate lessons from all files in the clean_txt directory with progress tracking and error handling.
+Generate lessons from all files in the clean_txt directory with batch saving.
 
 # Parameters
 - `input_dir`: Directory containing text files to process (default: "clean_txt")
@@ -321,10 +573,9 @@ Generate lessons from all files in the clean_txt directory with progress trackin
 - `verbose`: Enable verbose output (default: true)
 - `use_async`: Use asynchronous processing (default: true)
 - `target_categories`: Filter to specific categories (default: all categories)
-- `ntasks`: Number of concurrent async tasks (default: 8, tuned for OpenAI API limits)
+- `ntasks`: Number of concurrent async tasks (default: 4, tuned for OpenAI API limits)
 - `max_retries`: Maximum retries per chunk (default: 3)
-- `resume_checkpoint`: Path to checkpoint file to resume from (default: nothing)
-- `save_every`: Save checkpoint every N successful extractions (default: 50)
+- `topic_prefix`: Prefix for batch filenames (default: "lessons")
 """
 function generate_lessons_from_files(
     input_dir::String = "clean_txt";
@@ -336,31 +587,10 @@ function generate_lessons_from_files(
     target_categories::Vector{String} = String[],
     ntasks::Int = 4,
     max_retries::Int = 3,
-    resume_checkpoint::Union{String, Nothing} = nothing,
-    save_every::Int = 50
+    topic_prefix::String = "lessons"
 )
-    # Check for resume checkpoint
-    checkpoint = nothing
-    if !isnothing(resume_checkpoint)
-        checkpoint = load_checkpoint(resume_checkpoint)
-        if isnothing(checkpoint)
-            println("⚠️  Could not load checkpoint: $resume_checkpoint")
-            println("Starting fresh processing...")
-        else
-            println("📋 Resuming from checkpoint: $(checkpoint.session_id)")
-            println("   Progress: $(checkpoint.successful_extractions) lessons, $(length(checkpoint.processed_chunks)) chunks processed")
-            
-            # Validate checkpoint compatibility
-            if checkpoint.input_dir != input_dir || checkpoint.chunk_size != chunk_size || checkpoint.target_categories != target_categories
-                println("⚠️  Checkpoint parameters don't match current settings. Starting fresh...")
-                checkpoint = nothing
-            end
-        end
-    end
-    
     category_info = isempty(target_categories) ? "All categories" : join(target_categories, ", ")
     async_info = use_async ? "Enabled (ntasks=$ntasks, max_retries=$max_retries)" : "Disabled"
-    resume_info = isnothing(checkpoint) ? "Fresh start" : "Resuming from checkpoint"
     
     println(Term.Panel("""
 # 🏭 Lesson Generation Pipeline
@@ -373,8 +603,8 @@ Processing text files to generate structured lessons...
 **Max Files:** $(max_files == -1 ? "All" : max_files)
 **Chunk Size:** $chunk_size characters
 **Async Processing:** $async_info
-**Resume Mode:** $resume_info
-**Save Every:** $save_every lessons
+**Topic Prefix:** $topic_prefix
+**Batch Size:** 25 lessons per file
 """, title="Lesson Generator", style="bold blue"))
     
     # Ensure output directory exists
@@ -424,19 +654,13 @@ Processing text files to generate structured lessons...
         println("🎯 Filtered to $(length(filtered_chunks[1])) chunks matching target categories")
     end
     
-    # Create or use existing checkpoint
-    if isnothing(checkpoint)
-        checkpoint = create_checkpoint(input_dir, chunk_size, target_categories, length(filtered_chunks[1]), output_dir)
-        println("📋 Created new checkpoint: $(checkpoint.session_id)")
-    end
-    
     # Process chunks with progress tracking and error handling
     println("
 🧠 Processing chunks into lessons...")
     if use_async
-        all_lessons = process_chunks_async_simple(filtered_chunks, checkpoint; ntasks=ntasks, max_retries=max_retries, save_every=save_every)
+        all_lessons = process_chunks_async_simple(filtered_chunks, topic_prefix; ntasks=ntasks, max_retries=max_retries, output_dir=output_dir)
     else
-        all_lessons = process_chunks_with_checkpoint(filtered_chunks, checkpoint; save_every=save_every)
+        all_lessons = process_chunks_with_batches(filtered_chunks, topic_prefix; output_dir=output_dir)
     end
     
     if isempty(all_lessons)
@@ -453,16 +677,7 @@ Processing text files to generate structured lessons...
     # Create sample pack
     create_sample_pack(lessons_by_topic, output_dir)
     
-    # Clean up checkpoint after successful completion
-    try
-        rm(checkpoint.checkpoint_file)
-        println("🗑️  Cleaned up checkpoint file: $(basename(checkpoint.checkpoint_file))")
-    catch e
-        @warn "Could not remove checkpoint file: $e"
-    end
-    
-    # Clean up old checkpoints
-    cleanup_old_checkpoints(output_dir)
+    println("📊 Generation complete! Lessons saved as batch files in $output_dir")
     
     return lessons_by_topic
 end
@@ -1087,10 +1302,10 @@ Process chunks asynchronously with simple 429 handling using PromptingTools resp
 """
 function process_chunks_async_simple(
     chunks::Tuple{Vector{SubString{String}}, Vector{String}},
-    checkpoint::ProcessingCheckpoint;
+    topic_prefix::String = "lessons";
     ntasks::Int = 8,
     max_retries::Int = 3,
-    save_every::Int = 50
+    output_dir::String = "lesson_packs"
 )::Vector{Lesson}
     # Ensure API keys are loaded before processing
     GetAJobCLI.ensure_api_keys_loaded()
@@ -1098,50 +1313,39 @@ function process_chunks_async_simple(
     allchunks = chunks[1]
     total_chunks = length(allchunks)
     
-    # Filter out already processed chunks
-    remaining_chunks = []
-    remaining_indices = []
-    for (i, chunk) in enumerate(allchunks)
-        hash = chunk_hash(chunk)
-        if hash ∉ checkpoint.processed_chunks
-            push!(remaining_chunks, chunk)
-            push!(remaining_indices, i)
-        end
-    end
-    
-    already_processed = length(allchunks) - length(remaining_chunks)
-    println("Processing $(length(remaining_chunks)) remaining chunks ($(already_processed) already processed)...")
+    println("Processing $(length(allchunks)) chunks...")
     
     # Show session stats
     show_session_stats()
     
-    # Start with lessons from checkpoint
-    all_lessons = copy(checkpoint.lessons_generated)
+    # Create batch processor
+    batch_processor = create_batch_processor(output_dir, topic_prefix, 25)
     
     # Shared progress tracking
     progress_lock = Threads.SpinLock()
-    successful_extractions = Ref(checkpoint.successful_extractions)
-    failed_extractions = Ref(checkpoint.failed_extractions)
-    processed_count = Ref(already_processed)
+    successful_extractions = Ref(0)
+    failed_extractions = Ref(0)
+    processed_count = Ref(0)
+    all_lessons = Vector{Lesson}()
     
-    # Process remaining chunks asynchronously
-    if !isempty(remaining_chunks)
-        println("🚀 Starting async processing with ntasks: $ntasks")
-        
-        async_results = asyncmap(remaining_chunks; ntasks=ntasks) do text_chunk
-            process_single_chunk_simple(
-                text_chunk, max_retries, progress_lock, successful_extractions, failed_extractions, 
-                processed_count, total_chunks, checkpoint, save_every
-            )
-        end
-        
-        # Add new lessons (filter out failed results)
-        new_lessons = filter(!isnothing, async_results)
-        append!(all_lessons, new_lessons)
+    # Process chunks asynchronously
+    println("🚀 Starting async processing with ntasks: $ntasks")
+    
+    async_results = asyncmap(allchunks; ntasks=ntasks) do text_chunk
+        process_single_chunk_batch(
+            text_chunk, max_retries, progress_lock, successful_extractions, failed_extractions, 
+            processed_count, total_chunks, batch_processor, all_lessons
+        )
     end
     
-    # Final checkpoint save
-    save_checkpoint(checkpoint)
+    # Add new lessons (filter out failed results)
+    new_lessons = filter(!isnothing, async_results)
+    append!(all_lessons, new_lessons)
+    
+    # Save any remaining lessons in final batch
+    if !isempty(batch_processor.current_batch)
+        save_batch_by_topic(batch_processor)
+    end
     
     # Show final session stats
     show_session_stats()
@@ -1150,7 +1354,7 @@ function process_chunks_async_simple(
     println("   ✅ Successfully generated: $(successful_extractions[]) lessons")
     println("   ❌ Failed extractions: $(failed_extractions[]) chunks")
     println("   📈 Success rate: $(round(successful_extractions[]/total_chunks*100, digits=1))%")
-    println("   💾 Checkpoint saved: $(checkpoint.checkpoint_file)")
+    println("   💾 Batches saved to: $output_dir")
     
     return all_lessons
 end
@@ -1158,10 +1362,10 @@ end
 """
 Process chunks synchronously with checkpoint support for resumable processing.
 """
-function process_chunks_with_checkpoint(
+function process_chunks_with_batches(
     chunks::Tuple{Vector{SubString{String}}, Vector{String}},
-    checkpoint::ProcessingCheckpoint;
-    save_every::Int = 50
+    topic_prefix::String = "lessons";
+    output_dir::String = "lesson_packs"
 )::Vector{Lesson}
     # Ensure API keys are loaded before processing
     GetAJobCLI.ensure_api_keys_loaded()
@@ -1169,21 +1373,17 @@ function process_chunks_with_checkpoint(
     allchunks = chunks[1]
     total_chunks = length(allchunks)
     
-    # Start with lessons from checkpoint
-    all_lessons = copy(checkpoint.lessons_generated)
-    successful_extractions = checkpoint.successful_extractions
-    failed_extractions = checkpoint.failed_extractions
+    # Create batch processor
+    batch_processor = create_batch_processor(output_dir, topic_prefix, 25)
     
-    println("Processing $total_chunks chunks with checkpoint support...")
+    # Track progress
+    all_lessons = Vector{Lesson}()
+    successful_extractions = 0
+    failed_extractions = 0
+    
+    println("Processing $total_chunks chunks with batch saving...")
     
     for (i, text_chunk) in enumerate(allchunks)
-        hash = chunk_hash(text_chunk)
-        
-        # Skip if already processed
-        if hash ∈ checkpoint.processed_chunks
-            continue
-        end
-        
         try
             # Extract lesson from chunk
             response = PT.aiextract(text_chunk; return_type=Lesson)
@@ -1211,50 +1411,50 @@ function process_chunks_with_checkpoint(
             
             if !isnothing(response.content) && response.content isa Lesson && response.content.short_name != ""
                 push!(all_lessons, response.content)
-                push!(checkpoint.lessons_generated, response.content)
-                push!(checkpoint.processed_chunks, hash)
+                push!(batch_processor.current_batch, response.content)
                 successful_extractions += 1
+                
+                # Save batch when it reaches batch_size, organized by topic
+                if length(batch_processor.current_batch) >= batch_processor.batch_size
+                    save_batch_by_topic(batch_processor)
+                    # Reset batch for next set of lessons
+                    batch_processor.current_batch = Lesson[]
+                    batch_processor.batch_number += 1
+                end
             else
-                push!(checkpoint.processed_chunks, hash)
                 failed_extractions += 1
             end
             
         catch e
-            push!(checkpoint.processed_chunks, hash)
             failed_extractions += 1
             @warn "Error processing chunk $i: $e"
         end
         
-        # Save checkpoint periodically
-        if successful_extractions % save_every == 0
-            save_checkpoint(checkpoint)
-            println("💾 Checkpoint saved at $successful_extractions lessons")
-        end
-        
-        # Update progress
-        processed_count = length(checkpoint.processed_chunks)
-        if processed_count % 25 == 0 || processed_count == total_chunks
-            percentage = round(processed_count/total_chunks*100, digits=1)
-            println("[$processed_count/$total_chunks] $percentage% - ✅ $successful_extractions lessons | ❌ $failed_extractions failed")
+        # Update progress every 10 chunks
+        if i % 10 == 0 || i == total_chunks
+            percentage = round(i/total_chunks*100, digits=1)
+            println("[$i/$total_chunks] $percentage% - ✅ $successful_extractions lessons | ❌ $failed_extractions failed")
         end
     end
     
-    # Final checkpoint save
-    save_checkpoint(checkpoint)
+    # Save any remaining lessons in final batch
+    if !isempty(batch_processor.current_batch)
+        save_batch_by_topic(batch_processor)
+    end
     
-    println("\n📊 Checkpointed Processing Complete:")
+    println("\n📊 Batch Processing Complete:")
     println("   ✅ Successfully generated: $successful_extractions lessons")
     println("   ❌ Failed extractions: $failed_extractions")
     println("   📈 Success rate: $(round(successful_extractions/total_chunks*100, digits=1))%")
-    println("   💾 Checkpoint saved: $(checkpoint.checkpoint_file)")
+    println("   💾 Batches saved to: $output_dir")
     
     return all_lessons
 end
 
 """
-Process a single chunk with rate limiting, checkpoint support and progress tracking.
+Process a single chunk with batch saving support and progress tracking.
 """
-function process_single_chunk_simple(
+function process_single_chunk_batch(
     text_chunk::SubString{String},
     max_retries::Int,
     progress_lock::Threads.SpinLock,
@@ -1262,11 +1462,9 @@ function process_single_chunk_simple(
     failed_extractions::Ref{Int},
     processed_count::Ref{Int},
     total_chunks::Int,
-    checkpoint::ProcessingCheckpoint,
-    save_every::Int
+    batch_processor::BatchProcessor,
+    all_lessons::Vector{Lesson}
 )::Union{Lesson, Nothing}
-    
-    hash = chunk_hash(text_chunk)
     
     for attempt in 1:max_retries
         try
@@ -1300,23 +1498,25 @@ function process_single_chunk_simple(
             
             # Check if we got valid content
             if !isnothing(response.content) && response.content isa Lesson && response.content.short_name != ""
-                # Update progress and checkpoint (thread-safe)
+                # Update progress and batch (thread-safe)
                 lock(progress_lock) do
                     successful_extractions[] += 1
                     processed_count[] += 1
                     
-                    # Add to checkpoint
-                    push!(checkpoint.lessons_generated, response.content)
-                    push!(checkpoint.processed_chunks, hash)
+                    # Add to batch processor
+                    push!(batch_processor.current_batch, response.content)
+                    push!(all_lessons, response.content)
                     
-                    # Save checkpoint periodically
-                    if successful_extractions[] % save_every == 0
-                        save_checkpoint(checkpoint)
-                        println("💾 Checkpoint saved at $(successful_extractions[]) lessons")
+                    # Save batch when it reaches batch_size, organized by topic
+                    if length(batch_processor.current_batch) >= batch_processor.batch_size
+                        save_batch_by_topic(batch_processor)
+                        # Reset batch for next set of lessons
+                        batch_processor.current_batch = Lesson[]
+                        batch_processor.batch_number += 1
                     end
                     
-                    # Update progress
-                    if processed_count[] % 25 == 0 || processed_count[] == total_chunks
+                    # Update progress every 10 lessons for better feedback
+                    if processed_count[] % 10 == 0 || processed_count[] == total_chunks
                         percentage = round(processed_count[]/total_chunks*100, digits=1)
                         println("[$(processed_count[])/$total_chunks] $percentage% - ✅ $(successful_extractions[]) lessons | ❌ $(failed_extractions[]) failed")
                     end
@@ -1334,9 +1534,8 @@ function process_single_chunk_simple(
                 lock(progress_lock) do
                     failed_extractions[] += 1
                     processed_count[] += 1
-                    push!(checkpoint.processed_chunks, hash)
                     
-                    if processed_count[] % 25 == 0 || processed_count[] == total_chunks
+                    if processed_count[] % 10 == 0 || processed_count[] == total_chunks
                         percentage = round(processed_count[]/total_chunks*100, digits=1)
                         println("[$(processed_count[])/$total_chunks] $percentage% - ✅ $(successful_extractions[]) lessons | ❌ $(failed_extractions[]) failed")
                     end
@@ -1366,15 +1565,13 @@ function process_single_chunk_with_checkpoint(
     failed_extractions::Ref{Int},
     processed_count::Ref{Int},
     total_chunks::Int,
-    checkpoint::ProcessingCheckpoint,
+    checkpoint,  # deprecated parameter
     save_every::Int
 )::Union{Lesson, Nothing}
     
-    # Delegate to rate-limited version
-    return process_single_chunk_with_rate_limiting(
-        text_chunk, max_retries, progress_lock, successful_extractions, failed_extractions,
-        processed_count, total_chunks, checkpoint, save_every
-    )
+    # DEPRECATED: This function is no longer used - checkpoints removed
+    @warn "process_single_chunk_with_checkpoint is deprecated - use batch processing instead"
+    return nothing
 end
 
 """
@@ -1890,87 +2087,20 @@ function generate_category_specific_lessons(categories::Vector{String}; kwargs..
 end
 
 """
-Interactive function to select and resume from a checkpoint.
+DEPRECATED: Checkpoint resume function - now using batch processing.
 """
 function interactive_checkpoint_resume(output_dir::String = "lesson_packs"; kwargs...)
-    checkpoints = list_checkpoints(output_dir)
-    
-    if isempty(checkpoints)
-        println("📭 No checkpoints found in $output_dir")
-        return generate_lessons_from_files(; kwargs...)
-    end
-    
-    println("📋 Available checkpoints:")
-    for (i, checkpoint_file) in enumerate(checkpoints)
-        try
-            checkpoint = load_checkpoint(checkpoint_file)
-            if !isnothing(checkpoint)
-                session_name = checkpoint.session_id
-                progress = "$(checkpoint.successful_extractions)/$(checkpoint.total_chunks)"
-                age = round(Dates.value(now() - checkpoint.last_updated) / (1000 * 60 * 60), digits=1)
-                println("   $i. $session_name - $progress lessons ($(age)h ago)")
-            else
-                println("   $i. $(basename(checkpoint_file)) (corrupted)")
-            end
-        catch
-            println("   $i. $(basename(checkpoint_file)) (corrupted)")
-        end
-    end
-    
-    println("\nEnter checkpoint number to resume (or press Enter to start fresh):")
-    print("Selection: ")
-    input = strip(readline())
-    
-    if isempty(input)
-        return generate_lessons_from_files(; kwargs...)
-    end
-    
-    try
-        checkpoint_num = parse(Int, input)
-        if 1 <= checkpoint_num <= length(checkpoints)
-            selected_checkpoint = checkpoints[checkpoint_num]
-            return generate_lessons_from_files(; resume_checkpoint=selected_checkpoint, kwargs...)
-        else
-            println("❌ Invalid checkpoint number")
-            return nothing
-        end
-    catch
-        println("❌ Invalid input")
-        return nothing
-    end
+    println("⚠️  Checkpoint resume is deprecated - checkpoints have been replaced with batch processing.")
+    println("Starting fresh lesson generation...")
+    return generate_lessons_from_files(; kwargs...)
 end
 
 """
-Show detailed information about a checkpoint.
+DEPRECATED: Checkpoint info function - now using batch processing.
 """
 function show_checkpoint_info(checkpoint_file::String)
-    checkpoint = load_checkpoint(checkpoint_file)
-    if isnothing(checkpoint)
-        println("❌ Could not load checkpoint: $checkpoint_file")
-        return
-    end
-    
-    println(Term.Panel("""
-# 📋 Checkpoint Information
-
-**Session ID:** $(checkpoint.session_id)
-**Created:** $(checkpoint.created_at)
-**Last Updated:** $(checkpoint.last_updated)
-
-**Configuration:**
-- Input Directory: $(checkpoint.input_dir)
-- Chunk Size: $(checkpoint.chunk_size)
-- Target Categories: $(isempty(checkpoint.target_categories) ? "All" : join(checkpoint.target_categories, ", "))
-
-**Progress:**
-- Total Chunks: $(checkpoint.total_chunks)
-- Processed Chunks: $(length(checkpoint.processed_chunks))
-- Successful Extractions: $(checkpoint.successful_extractions)
-- Failed Extractions: $(checkpoint.failed_extractions)
-- Progress: $(round(length(checkpoint.processed_chunks)/checkpoint.total_chunks*100, digits=1))%
-
-**Lessons Generated:** $(length(checkpoint.lessons_generated))
-""", title="Checkpoint: $(checkpoint.session_id)", style="bold cyan"))
+    println("⚠️  Checkpoint info is deprecated - checkpoints have been replaced with batch processing.")
+    println("Use 'list-packs' to see available lesson packs instead.")
 end
 
 
@@ -1989,6 +2119,14 @@ export generate_lessons_from_files,
        filter_chunks_by_categories,
        filter_chunks_by_categories_with_threshold,
        analyze_chunk_categories,
+       lesson_hash,
+       pack_exists,
+       create_batch_processor,
+       save_batch_if_new,
+       save_batch_by_topic,
+       append_lessons_to_part,
+       find_or_create_part_file,
+       filter_duplicate_lessons,
        create_checkpoint,
        save_checkpoint,
        load_checkpoint,
