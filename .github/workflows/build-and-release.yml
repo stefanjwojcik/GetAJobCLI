@@ -31,7 +31,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Setup Julia
       uses: julia-actions/setup-julia@v2
@@ -110,7 +110,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Download all artifacts
       uses: actions/download-artifact@v4
@@ -175,7 +175,7 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       
     - name: Setup Julia
       uses: julia-actions/setup-julia@v2
